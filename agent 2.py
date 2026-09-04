@@ -95,18 +95,6 @@ K_END = tuple(
 
 A1, H1, A8, H8 = 91, 98, 21, 28
 N, E, S, W = -10, 1, 10, -1
-
-# Precomputed pawn offsets. These are only spelled out because N is a module
-# global, so an expression like `d in (N, N + N)` in the move generator rebuilt a
-# tuple on every iteration of its innermost loop.
-NN = N + N
-NW = N + W
-NE = N + E
-A1_N = A1 + N
-# Pre-built so the generator's inner loop tests membership against an existing
-# tuple instead of constructing one from globals on every iteration.
-PAWN_PUSH = (N, NN)
-PAWN_CAPTURE = (NW, NE)
 directions = {
     "P": (N, N + N, N + W, N + E),
     "N": (N + N + E, E + N + E, E + S + E, S + S + E, S + S + W, W + S + W, W + N + W, N + N + W),
@@ -143,39 +131,21 @@ class Position(NamedTuple):
     kp: int
 
     def gen_moves(self) -> "Iterator[Move]":
-        # This is the hottest function in the engine: profiling put it at 37% of
-        # all search time across 6.6M calls. Everything below is the same logic
-        # as the reference, rewritten to keep the inner loop cheap:
-        #   * fields are hoisted to locals; `self.board[j]` in the innermost loop
-        #     is a namedtuple attribute lookup on every iteration.
-        #   * `d in (N, N + N)` built a fresh tuple from globals each time round,
-        #     because N is a module global rather than a literal. Precomputed
-        #     NN/NW/NE and plain comparisons avoid that.
-        #   * `abs()` was called 9.1M times. kp is 0 except just after a castle,
-        #     and every target square is >= A8, so abs(j - 0) > 1 always holds;
-        #     testing kp first short-circuits almost all of those calls.
-        board = self.board
-        ep = self.ep
-        kp = self.kp
-        wc = self.wc
-        for i, p in enumerate(board):
+        for i, p in enumerate(self.board):
             if p not in "PNBRQK":
                 continue
             for d in directions[p]:
                 for j in count(i + d, d):
-                    q = board[j]
+                    q = self.board[j]
                     if q in " \nPNBRQK":
                         break
                     if p == "P":
-                        # The `d in (...)` form reads better but measured slower:
-                        # tuple membership costs more than two integer compares,
-                        # and this line runs millions of times per search.
-                        if (d == N or d == NN) and q != ".":  # noqa: SIM109
+                        if d in (N, N + N) and q != ".":
                             break
-                        if d == NN and (i < A1_N or board[i + N] != "."):
+                        if d == N + N and (i < A1 + N or self.board[i + N] != "."):
                             break
-                        if ((d == NW or d == NE) and q == "."  # noqa: SIM109
-                                and j != ep and (not kp or abs(j - kp) > 1)):
+                        if (d in (N + W, N + E) and q == "."
+                                and j != self.ep and abs(j - self.kp) > 1):
                             break
                         if A8 <= j <= H8:
                             yield from (Move(i, j, prom) for prom in "NBRQ")
@@ -183,9 +153,9 @@ class Position(NamedTuple):
                     yield Move(i, j, "")
                     if p in "PNK" or q in "pnbrqk":
                         break
-                    if i == A1 and board[j + E] == "K" and wc[0]:
+                    if i == A1 and self.board[j + E] == "K" and self.wc[0]:
                         yield Move(j + E, j + W, "")
-                    if i == H1 and board[j + W] == "K" and wc[1]:
+                    if i == H1 and self.board[j + W] == "K" and self.wc[1]:
                         yield Move(j + W, j + E, "")
 
     def rotate(self, nullmove: bool = False) -> "Position":
@@ -222,19 +192,12 @@ class Position(NamedTuple):
         return Position(board, score, wc, bc, ep, kp).rotate()
 
     def value(self, move: "Move") -> int:
-        # Second hottest function: 16% of search time over 5.9M calls. Same
-        # transformations as gen_moves - hoist the table lookup, and test kp
-        # before paying for abs(), which cannot succeed while kp is 0 because
-        # every target square is >= A8.
         i, j, prom = move
-        board = self.board
-        p, q = board[i], board[j]
-        pst_p = pst[p]
-        score = pst_p[j] - pst_p[i]
+        p, q = self.board[i], self.board[j]
+        score = pst[p][j] - pst[p][i]
         if q in "pnbrqk":
             score += pst[q.upper()][119 - j]
-        kp = self.kp
-        if kp and abs(j - kp) < 2:
+        if abs(j - self.kp) < 2:
             score += pst["K"][119 - j]
         if p == "K" and abs(i - j) == 2:
             score += pst["R"][(i + j) // 2]
@@ -427,12 +390,6 @@ def sunfish_move_to_uci(m: Move, b: chess.Board) -> str:
 # transposition tables and killer moves carry over between our own moves.
 _searcher = Searcher()
 
-# Every position we have been asked about this game, oldest first. The searcher
-# scores a repeated position as a draw, so this is what stops us shuffling a won
-# game into a threefold the referee then claims. Module state is per game, so it
-# starts empty for each new game and never leaks into the next one.
-_history: list[Position] = []
-
 # Milliseconds we shave off the clock for reply/accounting lag (AGENTS.md).
 DELAY_MS = 200
 
@@ -449,47 +406,29 @@ def get_move(fen: str, time_left_ms: int) -> str:
     legal = list(board.legal_moves)
     if not legal:
         return ""
-    if len(legal) == 1:
-        # Nothing to think about, and it banks the increment.
-        return legal[0].uci()
 
     pos = board_to_sunfish(board)
-    _history.append(pos)
 
-    # THREE NUMBERS, MILLISECONDS. `budget` is what this move is worth: a
-    # fortieth of the clock plus the increment it earns back, less reply lag.
-    # `soft` is when to stop STARTING a new iteration, `think` the wall one
-    # iteration may run to. Letting think exceed soft is what buys depth in
-    # sharp positions; both are clamped well under the clock so a slow
-    # iteration still cannot flag us.
+    # Budget: a slice of the remaining clock plus the move increment, minus lag.
     remaining = max(time_left_ms - DELAY_MS, 0)
     budget_ms = remaining / 40 + 500
-    soft_ms = max(min(budget_ms, remaining / 4), 20)
-    think_ms = max(min(5 * budget_ms, remaining / 2), 40)
+    # Never think longer than a quarter of what is left, and always at least a beat.
+    think_s = max(min(budget_ms, remaining / 4) / 1000, 0.02)
 
-    start = time.time()
-    _searcher.soft = start + soft_ms / 1000
-    _searcher.deadline = start + think_ms / 1000
+    _searcher.deadline = time.time() + think_s
+    _searcher.soft = _searcher.deadline
 
-    # Only a COMPLETED depth's last fail-high is trustworthy: a stop inside a
-    # depth can catch a probe at a nonsense window, so we keep the finished
-    # depth's move (`best`) and only promote the in-progress one (`cand`) once
-    # the next depth begins.
     best: Move | None = None
-    cand: Move | None = None
-    seen_depth = 1
     try:
-        for depth, gamma, score, move in _searcher.search(_history):
-            if depth > seen_depth:
-                best, seen_depth = cand or best, depth
-            if score >= gamma and move is not None:
-                cand = move
+        for _depth, gamma, score, move in _searcher.search([pos]):
+            # Only trust a move that achieved a fail-high (settled at this window).
+            if move is not None and score >= gamma:
+                best = move
     except Stop:
-        cand = best or cand
+        pass
 
-    chosen = cand or best
-    if chosen is not None:
-        uci = sunfish_move_to_uci(chosen, board)
+    if best is not None:
+        uci = sunfish_move_to_uci(best, board)
         try:
             if chess.Move.from_uci(uci) in board.legal_moves:
                 return uci
