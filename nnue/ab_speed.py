@@ -31,11 +31,11 @@ REPEATS = 5
 
 
 def load_reference() -> object:
-    path = ROOT / "baselines" / "live_pst" / "agent.py"
-    spec = importlib.util.spec_from_file_location("live_pst_agent", path)
+    path = ROOT / "baselines" / "fast_pst" / "agent.py"
+    spec = importlib.util.spec_from_file_location("fast_pst_agent", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    sys.modules["live_pst_agent"] = module
+    sys.modules["fast_pst_agent"] = module
     spec.loader.exec_module(module)
     return module
 

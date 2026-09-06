@@ -32,6 +32,14 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 ignore = ["N818"]
 
+[tool.ruff.lint.per-file-ignores]
+# agent_header.py and agent_footer.py are FRAGMENTS, not modules: build_agent.py
+# concatenates them around the engine source to produce agent.py. Each half
+# references names the other half defines, so linting them standalone is
+# meaningless. The assembled agent.py is linted normally and is what ships.
+"nengine/agent_header.py" = ["F401", "F821", "E402"]
+"nengine/agent_footer.py" = ["F821", "E402"]
+
 [tool.mypy]
 strict = true
 files = ["agent.py", "harness"]

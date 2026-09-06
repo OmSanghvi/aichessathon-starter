@@ -1,0 +1,241 @@
+==============================================
+NNUE v2 overnight run: Fri Sep  4 22:57:04 EDT 2026
+  generation: 8h   epochs: 60   accumulator: 256
+==============================================
+
+--- [1/5] verifying feature encodings ---
+
+checked 3974 positions, 0 mismatches
+king buckets exercised: [0, 1, 2, 3] of [0, 1, 2, 3]
+OK: agent and training feature encodings are identical
+
+--- [2/5] generating data (8h, resumable) ---
+resuming: 0 shard(s), 0 positions already on disk
+  wrote shard_0000.npz: 100,000 rows  (100,000 this run, 100,000 total)  244/sec  7.9h left
+  wrote shard_0001.npz: 100,056 rows  (200,056 this run, 200,056 total)  275/sec  7.8h left
+  wrote shard_0002.npz: 100,001 rows  (300,057 this run, 300,057 total)  286/sec  7.7h left
+  wrote shard_0003.npz: 100,021 rows  (400,078 this run, 400,078 total)  294/sec  7.6h left
+  wrote shard_0004.npz: 100,036 rows  (500,114 this run, 500,114 total)  298/sec  7.5h left
+  wrote shard_0005.npz: 100,000 rows  (600,114 this run, 600,114 total)  301/sec  7.4h left
+  wrote shard_0006.npz: 100,020 rows  (700,134 this run, 700,134 total)  304/sec  7.4h left
+  wrote shard_0007.npz: 100,001 rows  (800,135 this run, 800,135 total)  306/sec  7.3h left
+  wrote shard_0008.npz: 100,033 rows  (900,168 this run, 900,168 total)  299/sec  7.2h left
+  wrote shard_0009.npz: 100,015 rows  (1,000,183 this run, 1,000,183 total)  274/sec  7.0h left
+  wrote shard_0010.npz: 100,028 rows  (1,100,211 this run, 1,100,211 total)  157/sec  6.1h left
+  wrote shard_0011.npz: 100,015 rows  (1,200,226 this run, 1,200,226 total)  144/sec  5.7h left
+  wrote shard_0012.npz: 100,007 rows  (1,300,233 this run, 1,300,233 total)  148/sec  5.6h left
+  wrote shard_0013.npz: 100,044 rows  (1,400,277 this run, 1,400,277 total)  150/sec  5.4h left
+  wrote shard_0014.npz: 100,048 rows  (1,500,325 this run, 1,500,325 total)  149/sec  5.2h left
+  wrote shard_0015.npz: 100,010 rows  (1,600,335 this run, 1,600,335 total)  151/sec  5.1h left
+  wrote shard_0016.npz: 100,023 rows  (1,700,358 this run, 1,700,358 total)  156/sec  5.0h left
+  wrote shard_0017.npz: 100,030 rows  (1,800,388 this run, 1,800,388 total)  161/sec  4.9h left
+  wrote shard_0018.npz: 100,021 rows  (1,900,409 this run, 1,900,409 total)  165/sec  4.8h left
+  wrote shard_0019.npz: 100,024 rows  (2,000,433 this run, 2,000,433 total)  169/sec  4.7h left
+  wrote shard_0020.npz: 100,023 rows  (2,100,456 this run, 2,100,456 total)  173/sec  4.6h left
+  wrote shard_0021.npz: 100,022 rows  (2,200,478 this run, 2,200,478 total)  177/sec  4.6h left
+  wrote shard_0022.npz: 100,017 rows  (2,300,495 this run, 2,300,495 total)  181/sec  4.5h left
+  wrote shard_0023.npz: 100,015 rows  (2,400,510 this run, 2,400,510 total)  185/sec  4.4h left
+  wrote shard_0024.npz: 100,016 rows  (2,500,526 this run, 2,500,526 total)  188/sec  4.3h left
+  wrote shard_0025.npz: 100,023 rows  (2,600,549 this run, 2,600,549 total)  191/sec  4.2h left
+  wrote shard_0026.npz: 100,008 rows  (2,700,557 this run, 2,700,557 total)  194/sec  4.1h left
+  wrote shard_0027.npz: 100,043 rows  (2,800,600 this run, 2,800,600 total)  197/sec  4.1h left
+  wrote shard_0028.npz: 100,042 rows  (2,900,642 this run, 2,900,642 total)  200/sec  4.0h left
+  wrote shard_0029.npz: 100,004 rows  (3,000,646 this run, 3,000,646 total)  203/sec  3.9h left
+  wrote shard_0030.npz: 100,002 rows  (3,100,648 this run, 3,100,648 total)  205/sec  3.8h left
+  wrote shard_0031.npz: 100,039 rows  (3,200,687 this run, 3,200,687 total)  208/sec  3.7h left
+  wrote shard_0032.npz: 100,013 rows  (3,300,700 this run, 3,300,700 total)  210/sec  3.6h left
+  wrote shard_0033.npz: 100,032 rows  (3,400,732 this run, 3,400,732 total)  212/sec  3.6h left
+  wrote shard_0034.npz: 100,025 rows  (3,500,757 this run, 3,500,757 total)  215/sec  3.5h left
+  wrote shard_0035.npz: 100,047 rows  (3,600,804 this run, 3,600,804 total)  217/sec  3.4h left
+  wrote shard_0036.npz: 100,003 rows  (3,700,807 this run, 3,700,807 total)  219/sec  3.3h left
+  wrote shard_0037.npz: 100,017 rows  (3,800,824 this run, 3,800,824 total)  221/sec  3.2h left
+  wrote shard_0038.npz: 100,015 rows  (3,900,839 this run, 3,900,839 total)  222/sec  3.1h left
+  wrote shard_0039.npz: 100,011 rows  (4,000,850 this run, 4,000,850 total)  224/sec  3.0h left
+  wrote shard_0040.npz: 100,023 rows  (4,100,873 this run, 4,100,873 total)  226/sec  3.0h left
+  wrote shard_0041.npz: 100,028 rows  (4,200,901 this run, 4,200,901 total)  228/sec  2.9h left
+  wrote shard_0042.npz: 100,010 rows  (4,300,911 this run, 4,300,911 total)  229/sec  2.8h left
+  wrote shard_0043.npz: 100,036 rows  (4,400,947 this run, 4,400,947 total)  231/sec  2.7h left
+  wrote shard_0044.npz: 100,030 rows  (4,500,977 this run, 4,500,977 total)  233/sec  2.6h left
+  wrote shard_0045.npz: 100,030 rows  (4,601,007 this run, 4,601,007 total)  234/sec  2.5h left
+  wrote shard_0046.npz: 100,020 rows  (4,701,027 this run, 4,701,027 total)  236/sec  2.5h left
+  wrote shard_0047.npz: 100,015 rows  (4,801,042 this run, 4,801,042 total)  237/sec  2.4h left
+  wrote shard_0048.npz: 100,015 rows  (4,901,057 this run, 4,901,057 total)  238/sec  2.3h left
+  wrote shard_0049.npz: 100,026 rows  (5,001,083 this run, 5,001,083 total)  240/sec  2.2h left
+  wrote shard_0050.npz: 100,023 rows  (5,101,106 this run, 5,101,106 total)  241/sec  2.1h left
+  wrote shard_0051.npz: 100,029 rows  (5,201,135 this run, 5,201,135 total)  242/sec  2.0h left
+  wrote shard_0052.npz: 100,015 rows  (5,301,150 this run, 5,301,150 total)  243/sec  2.0h left
+  wrote shard_0053.npz: 100,043 rows  (5,401,193 this run, 5,401,193 total)  234/sec  1.6h left
+  wrote shard_0054.npz: 100,013 rows  (5,501,206 this run, 5,501,206 total)  234/sec  1.5h left
+  wrote shard_0055.npz: 100,010 rows  (5,601,216 this run, 5,601,216 total)  233/sec  1.3h left
+  wrote shard_0056.npz: 100,017 rows  (5,701,233 this run, 5,701,233 total)  233/sec  1.2h left
+  wrote shard_0057.npz: 100,017 rows  (5,801,250 this run, 5,801,250 total)  232/sec  1.1h left
+  wrote shard_0058.npz: 100,022 rows  (5,901,272 this run, 5,901,272 total)  232/sec  0.9h left
+  wrote shard_0059.npz: 100,026 rows  (6,001,298 this run, 6,001,298 total)  232/sec  0.8h left
+  wrote shard_0060.npz: 100,012 rows  (6,101,310 this run, 6,101,310 total)  231/sec  0.7h left
+  wrote shard_0061.npz: 100,048 rows  (6,201,358 this run, 6,201,358 total)  231/sec  0.6h left
+  wrote shard_0062.npz: 100,011 rows  (6,301,369 this run, 6,301,369 total)  231/sec  0.4h left
+  wrote shard_0063.npz: 100,033 rows  (6,401,402 this run, 6,401,402 total)  231/sec  0.3h left
+  wrote shard_0064.npz: 100,030 rows  (6,501,432 this run, 6,501,432 total)  231/sec  0.2h left
+  wrote shard_0065.npz: 100,033 rows  (6,601,465 this run, 6,601,465 total)  231/sec  0.1h left
+  wrote shard_0066.npz: 41,612 rows  (6,643,077 this run, 6,643,077 total)  231/sec  0.0h left
+
+done: 6,643,077 new positions in 8.00h (231/sec)
+total on disk: 6,643,077
+
+--- [3/5] inspecting the dataset ---
+shard_0000.npz: 100,000 rows
+shard_0001.npz: 100,056 rows
+shard_0002.npz: 100,001 rows
+shard_0003.npz: 100,021 rows
+shard_0004.npz: 100,036 rows
+shard_0005.npz: 100,000 rows
+shard_0006.npz: 100,020 rows
+shard_0007.npz: 100,001 rows
+shard_0008.npz: 100,033 rows
+shard_0009.npz: 100,015 rows
+shard_0010.npz: 100,028 rows
+shard_0011.npz: 100,015 rows
+shard_0012.npz: 100,007 rows
+shard_0013.npz: 100,044 rows
+shard_0014.npz: 100,048 rows
+shard_0015.npz: 100,010 rows
+shard_0016.npz: 100,023 rows
+shard_0017.npz: 100,030 rows
+shard_0018.npz: 100,021 rows
+shard_0019.npz: 100,024 rows
+shard_0020.npz: 100,023 rows
+shard_0021.npz: 100,022 rows
+shard_0022.npz: 100,017 rows
+shard_0023.npz: 100,015 rows
+shard_0024.npz: 100,016 rows
+shard_0025.npz: 100,023 rows
+shard_0026.npz: 100,008 rows
+shard_0027.npz: 100,043 rows
+shard_0028.npz: 100,042 rows
+shard_0029.npz: 100,004 rows
+shard_0030.npz: 100,002 rows
+shard_0031.npz: 100,039 rows
+shard_0032.npz: 100,013 rows
+shard_0033.npz: 100,032 rows
+shard_0034.npz: 100,025 rows
+shard_0035.npz: 100,047 rows
+shard_0036.npz: 100,003 rows
+shard_0037.npz: 100,017 rows
+shard_0038.npz: 100,015 rows
+shard_0039.npz: 100,011 rows
+shard_0040.npz: 100,023 rows
+shard_0041.npz: 100,028 rows
+shard_0042.npz: 100,010 rows
+shard_0043.npz: 100,036 rows
+shard_0044.npz: 100,030 rows
+shard_0045.npz: 100,030 rows
+shard_0046.npz: 100,020 rows
+shard_0047.npz: 100,015 rows
+shard_0048.npz: 100,015 rows
+shard_0049.npz: 100,026 rows
+shard_0050.npz: 100,023 rows
+shard_0051.npz: 100,029 rows
+shard_0052.npz: 100,015 rows
+shard_0053.npz: 100,043 rows
+shard_0054.npz: 100,013 rows
+shard_0055.npz: 100,010 rows
+shard_0056.npz: 100,017 rows
+shard_0057.npz: 100,017 rows
+shard_0058.npz: 100,022 rows
+shard_0059.npz: 100,026 rows
+shard_0060.npz: 100,012 rows
+shard_0061.npz: 100,048 rows
+shard_0062.npz: 100,011 rows
+shard_0063.npz: 100,033 rows
+shard_0064.npz: 100,030 rows
+shard_0065.npz: 100,033 rows
+shard_0066.npz: 41,612 rows
+
+total positions: 6,643,077
+
+label cp: mean 39.2  std 642.3  min -1999  max 1999
+    p1     -1092
+    p10     -794
+    p25     -540
+    p50       34
+    p75      619
+    p90      837
+    p99     1153
+  fraction at the clamp: 0.00%
+
+pieces per position: mean 19.2  min 10  max 32
+
+king-bucket coverage (0=back/queenside 1=back/kingside 2=advanced/queenside 3=advanced/kingside):
+    bucket 0:  31.6%
+    bucket 1:  38.5%
+    bucket 2:  13.7%
+    bucket 3:  16.2%
+
+--- [4/5] training (60 epochs, resumable) ---
+loaded 6,643,077 positions from 67 shard(s)
+epoch   1/60  train 0.00789  val 0.00520  val_MAE  107.1 cp  lr 2.00e-03  (132s)
+epoch   2/60  train 0.00483  val 0.00436  val_MAE   95.7 cp  lr 1.99e-03  (133s)
+epoch   3/60  train 0.00418  val 0.00398  val_MAE   93.2 cp  lr 1.99e-03  (132s)
+epoch   4/60  train 0.00381  val 0.00370  val_MAE   89.5 cp  lr 1.98e-03  (135s)
+epoch   5/60  train 0.00355  val 0.00362  val_MAE   88.8 cp  lr 1.97e-03  (132s)
+epoch   6/60  train 0.00335  val 0.00350  val_MAE   86.4 cp  lr 1.95e-03  (132s)
+epoch   7/60  train 0.00319  val 0.00337  val_MAE   85.1 cp  lr 1.93e-03  (133s)
+epoch   8/60  train 0.00305  val 0.00327  val_MAE   83.5 cp  lr 1.91e-03  (131s)
+epoch   9/60  train 0.00294  val 0.00323  val_MAE   83.1 cp  lr 1.89e-03  (131s)
+epoch  10/60  train 0.00283  val 0.00317  val_MAE   82.2 cp  lr 1.87e-03  (1053s)
+epoch  11/60  train 0.00274  val 0.00317  val_MAE   82.1 cp  lr 1.84e-03  (84s)
+epoch  12/60  train 0.00267  val 0.00315  val_MAE   81.5 cp  lr 1.81e-03  (85s)
+epoch  13/60  train 0.00260  val 0.00314  val_MAE   81.3 cp  lr 1.78e-03  (138s)
+epoch  14/60  train 0.00253  val 0.00308  val_MAE   80.9 cp  lr 1.74e-03  (87s)
+epoch  15/60  train 0.00248  val 0.00309  val_MAE   80.9 cp  lr 1.71e-03  (145s)
+epoch  16/60  train 0.00243  val 0.00308  val_MAE   80.5 cp  lr 1.67e-03  (115s)
+epoch  17/60  train 0.00238  val 0.00310  val_MAE   81.1 cp  lr 1.63e-03  (123s)
+epoch  18/60  train 0.00234  val 0.00303  val_MAE   79.7 cp  lr 1.59e-03  (162s)
+epoch  19/60  train 0.00230  val 0.00304  val_MAE   80.2 cp  lr 1.54e-03  (109s)
+epoch  20/60  train 0.00227  val 0.00304  val_MAE   80.2 cp  lr 1.50e-03  (195s)
+epoch  21/60  train 0.00223  val 0.00304  val_MAE   80.1 cp  lr 1.45e-03  (140s)
+epoch  22/60  train 0.00221  val 0.00302  val_MAE   79.5 cp  lr 1.41e-03  (122s)
+epoch  23/60  train 0.00217  val 0.00304  val_MAE   79.7 cp  lr 1.36e-03  (130s)
+epoch  24/60  train 0.00215  val 0.00305  val_MAE   80.3 cp  lr 1.31e-03  (135s)
+epoch  25/60  train 0.00212  val 0.00302  val_MAE   79.6 cp  lr 1.26e-03  (136s)
+epoch  26/60  train 0.00210  val 0.00300  val_MAE   79.2 cp  lr 1.21e-03  (137s)
+epoch  27/60  train 0.00207  val 0.00302  val_MAE   79.6 cp  lr 1.16e-03  (136s)
+epoch  28/60  train 0.00205  val 0.00303  val_MAE   79.5 cp  lr 1.10e-03  (134s)
+epoch  29/60  train 0.00203  val 0.00303  val_MAE   79.3 cp  lr 1.05e-03  (133s)
+epoch  30/60  train 0.00201  val 0.00300  val_MAE   79.1 cp  lr 1.00e-03  (132s)
+epoch  31/60  train 0.00198  val 0.00301  val_MAE   79.7 cp  lr 9.48e-04  (132s)
+epoch  32/60  train 0.00197  val 0.00299  val_MAE   78.7 cp  lr 8.95e-04  (129s)
+epoch  33/60  train 0.00194  val 0.00302  val_MAE   79.2 cp  lr 8.44e-04  (129s)
+epoch  34/60  train 0.00193  val 0.00301  val_MAE   78.6 cp  lr 7.92e-04  (128s)
+epoch  35/60  train 0.00191  val 0.00301  val_MAE   79.2 cp  lr 7.41e-04  (128s)
+epoch  36/60  train 0.00189  val 0.00300  val_MAE   78.6 cp  lr 6.91e-04  (128s)
+epoch  37/60  train 0.00188  val 0.00305  val_MAE   79.1 cp  lr 6.42e-04  (129s)
+epoch  38/60  train 0.00186  val 0.00302  val_MAE   79.0 cp  lr 5.93e-04  (131s)
+epoch  39/60  train 0.00185  val 0.00300  val_MAE   78.4 cp  lr 5.46e-04  (129s)
+epoch  40/60  train 0.00183  val 0.00300  val_MAE   78.3 cp  lr 5.00e-04  (130s)
+epoch  41/60  train 0.00182  val 0.00300  val_MAE   78.5 cp  lr 4.55e-04  (1079s)
+epoch  42/60  train 0.00181  val 0.00300  val_MAE   78.2 cp  lr 4.12e-04  (85s)
+early stop: no improvement in 10 epochs
+
+best val 0.00299; saved /Users/shruti/aichessathon-starter/nnue2/out/net.pt
+Guide: v1 plateaued near 93 cp MAE and lost 12.5% in games. Under ~50 cp is where this becomes worth shipping.
+
+--- [5/5] quantising and verifying the integer path ---
+wrote /Users/shruti/aichessathon-starter/nnue2/out/nnue_weights.npz (1,062,489 bytes, acc=256, hidden=32)
+checkpoint reported val_MAE 78.7 cp
+quantisation error vs float net: mean 9.2 cp  p95 21.5 cp  max 39.1 cp
+OK: integer path tracks the float net
+
+To ship: cp /Users/shruti/aichessathon-starter/nnue2/out/nnue_weights.npz weights/nnue.npz   (and add the agent kernel)
+Nothing reaches the submission until you do that.
+
+==============================================
+done: Sat Sep  5 08:58:37 EDT 2026
+
+The net is NOT in the submission yet, on purpose. Before shipping:
+  1. check the reported val_MAE. v1 plateaued near 93 cp and lost 12.5% in
+     games; under ~50 cp is where this becomes worth trying.
+  2. confirm quantisation error is small (export.py prints it).
+  3. add the agent-side kernel, then play it against baselines/shipped.
+     A net has to beat the tables by MORE than the ~15% of search it costs.
+==============================================
