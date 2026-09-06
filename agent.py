@@ -626,6 +626,12 @@ TT_MASK = TT_SIZE - 1
 
 TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
 
+# A very narrow root safety rail for obvious, non-checking queen-scale hangs.
+# It deliberately does not suppress normal speculative exchanges or sacrifices;
+# the previous broad filter lost badly against the unfiltered engine.  Checks,
+# promotions, and check evasions are always left to the main search.
+ROOT_CATASTROPHIC_SEE = 500
+
 
 @njit(cache=False, inline="always")
 def _score_to_tt(score: int, ply: int) -> int:
@@ -689,6 +695,58 @@ def zobrist(
     if ep != 0:
         h ^= ze[ep]
     return int(h)
+
+
+@njit(cache=False, inline="always")
+def zobrist_after_move(
+    h: int, board_after: "np.ndarray", side: int, castling: int, ep: int,
+    m: int, captured: int, new_castling: int, new_ep: int,
+    zp: "np.ndarray", zs: int, zc: "np.ndarray", ze: "np.ndarray",
+) -> int:
+    """Update a Zobrist key after ``make_move`` without scanning the board."""
+    frm = mv_from(m)
+    to = mv_to(m)
+    flags = mv_flags(m)
+    placed = board_after[to]
+    mover = placed
+    if mv_promo(m) != 0:
+        mover = WP if side == 0 else BP
+
+    updated = np.int64(h)
+    updated ^= zp[mover, frm]
+    updated ^= zp[placed, to]
+    if flags == 1:
+        victim_square = to + (S if side == 0 else -S)
+        updated ^= zp[captured, victim_square]
+    elif captured != EMPTY and captured != OFF:
+        updated ^= zp[captured, to]
+
+    if flags == 2:
+        if to == 97:
+            updated ^= zp[WR, 98] ^ zp[WR, 96]
+        elif to == 93:
+            updated ^= zp[WR, 91] ^ zp[WR, 94]
+        elif to == 27:
+            updated ^= zp[BR, 28] ^ zp[BR, 26]
+        else:
+            updated ^= zp[BR, 21] ^ zp[BR, 24]
+
+    updated ^= zc[castling & 15] ^ zc[new_castling & 15]
+    if ep != 0:
+        updated ^= ze[ep]
+    if new_ep != 0:
+        updated ^= ze[new_ep]
+    updated ^= zs
+    return int(updated)
+
+
+@njit(cache=False, inline="always")
+def zobrist_after_null(h: int, ep: int, zs: int, ze: "np.ndarray") -> int:
+    """Update a key for the search-only null move (side flip, no ep square)."""
+    updated = np.int64(h) ^ zs
+    if ep != 0:
+        updated ^= ze[ep]
+    return int(updated)
 
 
 @njit(cache=False, inline="always")
@@ -1006,6 +1064,17 @@ def _is_third_repetition(
     return occurrences >= 2
 
 
+@njit(cache=False, inline="always")
+def late_move_reduction(depth: int, move_number: int) -> int:
+    """One-ply reduction for late quiet moves.
+
+    The depth-scaled experiment is deliberately disabled until it wins a
+    meaningful arena sample. Full re-search remains the safety net when this
+    reduced probe unexpectedly raises alpha.
+    """
+    return 1 if depth >= 3 and move_number > 3 else 0
+
+
 @njit(cache=False)
 def _order(
     board: "np.ndarray",
@@ -1130,7 +1199,7 @@ def quiesce(
 
 @njit(cache=False)
 def negamax(
-    board: "np.ndarray", side: int, castling: int, ep: int, depth: int,
+    board: "np.ndarray", side: int, castling: int, ep: int, h: int, depth: int,
     alpha: int, beta: int, ply: int,
     offsets: "np.ndarray", n_offsets: "np.ndarray", is_slider: "np.ndarray",
     pst: "np.ndarray", king_mid: "np.ndarray", king_end: "np.ndarray",
@@ -1152,7 +1221,6 @@ def negamax(
     if checked:
         depth += 1  # check extension: never let a forcing line fall off the horizon
 
-    h = zobrist(board, side, castling, ep, zp, zs, zc, ze)
     if _is_third_repetition(h, game_hashes, game_count, path_hashes, path_count):
         return 0
 
@@ -1196,7 +1264,8 @@ def negamax(
         # A null move: same board, opponent to move, en passant cleared. Search it
         # reduced by R and with a null window around beta.
         r = 2 + (depth // 6)
-        null_score = -negamax(board, 1 - side, castling, 0, depth - 1 - r,
+        null_hash = zobrist_after_null(h, ep, zs, ze)
+        null_score = -negamax(board, 1 - side, castling, 0, null_hash, depth - 1 - r,
                               -beta, -beta + 1, ply + 1,
                               offsets, n_offsets, is_slider, pst, king_mid, king_end,
                               tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
@@ -1231,6 +1300,9 @@ def negamax(
 
         m = buf[i]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        child_hash = zobrist_after_move(
+            h, board, side, castling, ep, m, captured, new_cr, new_ep, zp, zs, zc, ze
+        )
         if in_check(board, side, offsets, n_offsets, is_slider):
             unmake_move(board, side, m, captured)
             continue
@@ -1239,9 +1311,7 @@ def negamax(
         is_quiet = (captured == EMPTY or captured == OFF) and mv_promo(m) == 0  # noqa: SIM109 (explicit compares; tuple `in` is slower under numba)
         # Late move reduction: quiet moves late in a well-ordered list rarely
         # deserve full depth. Verified with a re-search if the reduction fails high.
-        red = 0
-        if depth >= 3 and legal > 3 and is_quiet and not checked:
-            red = 1
+        red = late_move_reduction(depth, legal) if is_quiet and not checked else 0
 
         # Principal Variation Search. The first legal move is searched with the
         # full window. Every later move is first probed with a null window
@@ -1250,14 +1320,14 @@ def negamax(
         # left) do we re-search it in full. Composes with LMR: the reduced null
         # window is the cheapest possible probe.
         if legal == 1:
-            score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
+            score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                              -beta, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
                              game_hashes, game_count, path_hashes, next_path_count)
         else:
-            score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1 - red,
+            score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1 - red,
                              -alpha - 1, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
@@ -1266,7 +1336,7 @@ def negamax(
             # Failed high on the null window (or the reduction was too aggressive):
             # re-search with the full window at full depth.
             if score > alpha and (score < beta or red > 0):
-                score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
+                score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                                  -beta, -alpha, ply + 1,
                                  offsets, n_offsets, is_slider, pst, king_mid,
                                  king_end, tt_key, tt_score, tt_move_a, tt_depth,
@@ -1323,7 +1393,7 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                 node_limit: int, zp: "np.ndarray", zs: int,
                 zc: "np.ndarray", ze: "np.ndarray",
                 prev_best: int, game_hashes: "np.ndarray",
-                game_count: int) -> "tuple[int, int]":
+                game_count: int, root_hash: int) -> "tuple[int, int]":
     """One iteration of iterative deepening. Returns (score, best_move)."""
     buf = np.empty(256, dtype=np.int32)
     n = gen_moves(board, side, castling, ep, buf, offsets, n_offsets, is_slider)
@@ -1338,6 +1408,8 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
     best_move = 0
     best_score = -INF
     legal = 0
+    catastrophic_fallback = 0
+    root_checked = in_check(board, side, offsets, n_offsets, is_slider)
     path_hashes = np.zeros(MAX_PLY, dtype=np.int64)
 
     for i in range(n):
@@ -1350,30 +1422,63 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
             buf[i], buf[pick] = buf[pick], buf[i]
 
         m = buf[i]
+        # SEE operates on the position before the capture.
+        root_see = 0
+        victim = board[mv_to(m)]
+        if (
+            not root_checked
+            and mv_promo(m) == 0
+            and ((victim != EMPTY and victim != OFF) or mv_flags(m) == 1)
+        ):
+            root_see = see(
+                board, side, castling, ep, m, offsets, n_offsets, is_slider
+            )
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        child_hash = zobrist_after_move(
+            root_hash, board, side, castling, ep, m, captured, new_cr, new_ep,
+            zp, zs, zc, ze,
+        )
         if in_check(board, side, offsets, n_offsets, is_slider):
             unmake_move(board, side, m, captured)
             continue
+        # Keep the original root search intact except for an immediately
+        # catastrophic, non-checking capture.  This catches a queen simply
+        # being taken (the rated Qxc4 loss was -570 SEE), not a normal exchange
+        # or speculative piece sacrifice.
+        catastrophic_capture = (
+            not root_checked
+            and captured != EMPTY
+            and captured != OFF
+            and mv_promo(m) == 0
+            and not in_check(board, 1 - side, offsets, n_offsets, is_slider)
+            and root_see <= -ROOT_CATASTROPHIC_SEE
+        )
+        if catastrophic_capture:
+            if catastrophic_fallback == 0:
+                catastrophic_fallback = m
+            unmake_move(board, side, m, captured)
+            continue
+
         legal += 1
         if legal == 1:
             # The first root move establishes the principal variation.  As at
             # interior nodes, later moves get a cheap null-window probe first;
             # a probe that improves alpha is re-searched with the full window.
-            score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
+            score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                              -beta, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
                              game_hashes, game_count, path_hashes, 0)
         else:
-            score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
+            score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                              -alpha - 1, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
                              game_hashes, game_count, path_hashes, 0)
             if score > alpha and score < beta:
-                score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
+                score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                                  -beta, -alpha, 1,
                                  offsets, n_offsets, is_slider, pst, king_mid, king_end,
                                  tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
@@ -1389,6 +1494,8 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
         if score > alpha:
             alpha = score
 
+    if legal == 0 and catastrophic_fallback != 0:
+        return -INF, catastrophic_fallback
     return best_score, best_move
 
 # ==========================================================================
@@ -1483,7 +1590,7 @@ class _Engine:
                 self.tt[0], self.tt[1], self.tt[2], self.tt[3], self.tt[4],
                 self.killers, self.history, counters, node_limit,
                 ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
-                self.game_hashes, self.game_count,
+                self.game_hashes, self.game_count, root_hash,
             )
             spent = time.time() - start
             if spent > 0.02 and counters[0] > 0:

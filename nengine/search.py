@@ -36,9 +36,9 @@ from nengine.board import (
     N_OFFSETS,
     OFF,
     OFFSETS,
-    S,
     WP,
     WR,
+    S,
     encode,
     gen_moves,
     in_check,
@@ -210,6 +210,12 @@ TT_SIZE = 1 << TT_BITS
 TT_MASK = TT_SIZE - 1
 
 TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
+
+# A very narrow root safety rail for obvious, non-checking queen-scale hangs.
+# It deliberately does not suppress normal speculative exchanges or sacrifices;
+# the previous broad filter lost badly against the unfiltered engine.  Checks,
+# promotions, and check evasions are always left to the main search.
+ROOT_CATASTROPHIC_SEE = 500
 
 
 @njit(cache=False, inline="always")
@@ -643,6 +649,17 @@ def _is_third_repetition(
     return occurrences >= 2
 
 
+@njit(cache=False, inline="always")
+def late_move_reduction(depth: int, move_number: int) -> int:
+    """One-ply reduction for late quiet moves.
+
+    The depth-scaled experiment is deliberately disabled until it wins a
+    meaningful arena sample. Full re-search remains the safety net when this
+    reduced probe unexpectedly raises alpha.
+    """
+    return 1 if depth >= 3 and move_number > 3 else 0
+
+
 @njit(cache=False)
 def _order(
     board: "np.ndarray",
@@ -879,9 +896,7 @@ def negamax(
         is_quiet = (captured == EMPTY or captured == OFF) and mv_promo(m) == 0  # noqa: SIM109 (explicit compares; tuple `in` is slower under numba)
         # Late move reduction: quiet moves late in a well-ordered list rarely
         # deserve full depth. Verified with a re-search if the reduction fails high.
-        red = 0
-        if depth >= 3 and legal > 3 and is_quiet and not checked:
-            red = 1
+        red = late_move_reduction(depth, legal) if is_quiet and not checked else 0
 
         # Principal Variation Search. The first legal move is searched with the
         # full window. Every later move is first probed with a null window
@@ -978,6 +993,8 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
     best_move = 0
     best_score = -INF
     legal = 0
+    catastrophic_fallback = 0
+    root_checked = in_check(board, side, offsets, n_offsets, is_slider)
     path_hashes = np.zeros(MAX_PLY, dtype=np.int64)
 
     for i in range(n):
@@ -990,6 +1007,17 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
             buf[i], buf[pick] = buf[pick], buf[i]
 
         m = buf[i]
+        # SEE operates on the position before the capture.
+        root_see = 0
+        victim = board[mv_to(m)]
+        if (
+            not root_checked
+            and mv_promo(m) == 0
+            and ((victim != EMPTY and victim != OFF) or mv_flags(m) == 1)
+        ):
+            root_see = see(
+                board, side, castling, ep, m, offsets, n_offsets, is_slider
+            )
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
         child_hash = zobrist_after_move(
             root_hash, board, side, castling, ep, m, captured, new_cr, new_ep,
@@ -998,6 +1026,24 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
         if in_check(board, side, offsets, n_offsets, is_slider):
             unmake_move(board, side, m, captured)
             continue
+        # Keep the original root search intact except for an immediately
+        # catastrophic, non-checking capture.  This catches a queen simply
+        # being taken (the rated Qxc4 loss was -570 SEE), not a normal exchange
+        # or speculative piece sacrifice.
+        catastrophic_capture = (
+            not root_checked
+            and captured != EMPTY
+            and captured != OFF
+            and mv_promo(m) == 0
+            and not in_check(board, 1 - side, offsets, n_offsets, is_slider)
+            and root_see <= -ROOT_CATASTROPHIC_SEE
+        )
+        if catastrophic_capture:
+            if catastrophic_fallback == 0:
+                catastrophic_fallback = m
+            unmake_move(board, side, m, captured)
+            continue
+
         legal += 1
         if legal == 1:
             # The first root move establishes the principal variation.  As at
@@ -1033,4 +1079,6 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
         if score > alpha:
             alpha = score
 
+    if legal == 0 and catastrophic_fallback != 0:
+        return -INF, catastrophic_fallback
     return best_score, best_move
