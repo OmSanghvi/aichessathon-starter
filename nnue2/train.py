@@ -117,8 +117,8 @@ def wdl_loss(pred_cp: torch.Tensor, target_cp: torch.Tensor) -> torch.Tensor:
     )
 
 
-def load(limit: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    shards = sorted(DATA.glob("shard_*.npz"))
+def load(data: Path, limit: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    shards = sorted(data.glob("shard_*.npz"))
     if not shards:
         raise SystemExit("no shards in nnue2/data - run nnue2/gen.py first")
     b, t, y = [], [], []
@@ -152,6 +152,15 @@ def main() -> None:
         help="checkpoint directory (use a separate directory for each evaluator experiment)",
     )
     p.add_argument("--epochs", type=int, default=60)
+    p.add_argument("--data-dir", default=str(DATA))
+    p.add_argument(
+        "--hard-data-dir", default="",
+        help="optional blunder-mined shards; used only for training, never validation",
+    )
+    p.add_argument(
+        "--hard-repeat", type=int, default=4,
+        help="how often to repeat each mined child position in the training split",
+    )
     p.add_argument("--acc", type=int, default=256)
     p.add_argument("--hidden", type=int, default=32)
     p.add_argument("--batch", type=int, default=8192)
@@ -179,11 +188,26 @@ def main() -> None:
     OUT = Path(args.out)
     OUT.mkdir(parents=True, exist_ok=True)
 
-    boards, turns, labels = load(args.limit)
+    boards, turns, labels = load(Path(args.data_dir), args.limit)
     n = labels.shape[0]
     order = np.random.default_rng(0).permutation(n)
     boards, turns, labels = boards[order], turns[order], labels[order]
     split = int(n * (1 - args.val_frac))
+
+    train_boards = boards[:split]
+    train_turns = turns[:split]
+    train_labels = labels[:split]
+    if args.hard_data_dir:
+        if args.hard_repeat < 1:
+            raise SystemExit("--hard-repeat must be positive")
+        hard_boards, hard_turns, hard_labels = load(Path(args.hard_data_dir), None)
+        train_boards = np.concatenate((
+            train_boards,
+            np.tile(hard_boards, (args.hard_repeat, 1)),
+        ))
+        train_turns = np.concatenate((train_turns, np.tile(hard_turns, args.hard_repeat)))
+        train_labels = np.concatenate((train_labels, np.tile(hard_labels, args.hard_repeat)))
+        print(f"added {hard_labels.shape[0]:,} mined rows x{args.hard_repeat} to training only")
 
     if args.residual:
         if args.residual_anchor == "nengine":
@@ -199,11 +223,12 @@ def main() -> None:
         print(f"  residual: mean {res.mean():+.0f}  std {res.std():.0f}  "
               f"vs raw label std {labels.std():.0f}")
         train_ds: Dataset = Residuals(
-            boards[:split], turns[:split], labels[:split], anchors[:split])
+            train_boards, train_turns, train_labels,
+            scores_batch(train_boards, train_turns))
         val_ds: Dataset = Residuals(
             boards[split:], turns[split:], labels[split:], anchors[split:])
     else:
-        train_ds = Positions(boards[:split], turns[:split], labels[:split])
+        train_ds = Positions(train_boards, train_turns, train_labels)
         val_ds = Positions(boards[split:], turns[split:], labels[split:])
 
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True,

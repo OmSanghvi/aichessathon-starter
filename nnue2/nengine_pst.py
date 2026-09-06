@@ -1,62 +1,37 @@
-"""Current nengine's static evaluation, batched for residual-NNUE training.
+"""Exact current-Nengine static-evaluation anchor for residual NNUE training.
 
-The previous residual target used Sunfish's score.  That made the learned correction
-incompatible with the mailbox engine: adding it to a different material/PST scale
-lost decisively in an A/B test.  This module reproduces the evaluator that actually
-ships in ``agent.py`` directly from the stored board codes, so a residual net now
-has one unambiguous anchor.
+Residual training is only valid if its anchor is *the same function* used by the
+search. Reimplementing material/PST tables here drifted when the engine moved to
+PeSTO plus mobility, passed pawns and king safety. Build a mailbox and invoke the
+real jitted evaluator instead, so a future evaluator change cannot silently train
+an incompatible residual model.
 """
 
 import numpy as np
 from numba import njit
 
-from nengine.search import (
-    ENDGAME_MATERIAL,
-    PIECE_VALUE,
-    PST,
-    PST_KING_END,
-    PST_KING_MID,
-)
+from nengine.board import OFF, SQ120
+from nengine.search import PST, PST_KING_END, PST_KING_MID, evaluate
 
 
 @njit(cache=False)
 def score_codes(codes: np.ndarray, turn: int) -> int:
-    """Match nengine.evaluate() for one board; turn is 1 for White to move."""
-    score = 0
-    npm_white = 0
-    npm_black = 0
+    """Return the precise ``nengine.evaluate`` score for one raw-board row."""
+    board = np.full(120, OFF, dtype=np.int8)
     for square in range(64):
-        piece = codes[square]
-        if piece == 0:
-            continue
-        if piece <= 6:
-            kind = piece
-            if kind != 1 and kind != 6:
-                npm_white += PIECE_VALUE[kind]
-            if kind != 6:
-                score += PIECE_VALUE[kind] + PST[kind, square]
-        else:
-            kind = piece - 6
-            if kind != 1 and kind != 6:
-                npm_black += PIECE_VALUE[kind]
-            if kind != 6:
-                score -= PIECE_VALUE[kind] + PST[kind, square ^ 56]
-
-    endgame = npm_white + npm_black <= ENDGAME_MATERIAL
-    for square in range(64):
-        piece = codes[square]
-        if piece == 6:
-            score += PST_KING_END[square] if endgame else PST_KING_MID[square]
-        elif piece == 12:
-            mirror = square ^ 56
-            score -= PST_KING_END[mirror] if endgame else PST_KING_MID[mirror]
-    return score if turn == 1 else -score
+        board[SQ120[square]] = codes[square]
+    side = 0 if turn == 1 else 1
+    return evaluate(board, side, PST, PST_KING_MID, PST_KING_END)
 
 
 @njit(cache=False)
 def scores_batch(boards: np.ndarray, turns: np.ndarray) -> np.ndarray:
-    """Evaluate a shard in mover-relative centipawns."""
+    """Evaluate a data batch in mover-relative centipawns without approximation."""
     out = np.empty(boards.shape[0], dtype=np.int32)
+    board = np.full(120, OFF, dtype=np.int8)
     for row in range(boards.shape[0]):
-        out[row] = score_codes(boards[row], turns[row])
+        for square in range(64):
+            board[SQ120[square]] = boards[row, square]
+        side = 0 if turns[row] == 1 else 1
+        out[row] = evaluate(board, side, PST, PST_KING_MID, PST_KING_END)
     return out

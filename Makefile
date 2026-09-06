@@ -12,7 +12,7 @@ arena:
 	uv run python -m harness.arena --opponent baselines/greedy --games 20
 
 zip:
-	uv run python -c 'import zipfile; archive = zipfile.ZipFile("submission.zip", "w", zipfile.ZIP_DEFLATED); archive.write("agent.py"); archive.close()'
+	uv run python -c 'import zipfile; archive = zipfile.ZipFile("submission.zip", "w", zipfile.ZIP_DEFLATED); archive.write("agent.py"); archive.write("weights/cpp_nnue.bin"); archive.close()'
 
 gate:
 	uv run ruff check agent.py nengine

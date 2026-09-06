@@ -6,6 +6,7 @@ search - with evaluation, ordering, a transposition table and quiescence - achie
 and confirms it finds the tactics the old engine found.
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nengine.board import IS_SLIDER, N_OFFSETS, OFFSETS, mv_from, mv_promo, mv_to  # noqa: E402
+from nengine.cpp_nnue import load_network, refresh_accumulator  # noqa: E402
 from nengine.search import (  # noqa: E402
     MAX_PLY,
     PST,
@@ -32,6 +34,10 @@ from nengine.search import (  # noqa: E402
 )
 from nengine.test_perft import to_arrays  # noqa: E402
 
+NNUE_ACC = np.zeros((2, 512), dtype=np.int32)
+NNUE_FT = np.zeros((768, 512), dtype=np.int16)
+NNUE_OUT = np.zeros(1024, dtype=np.int16)
+
 SQ64_NAME = {}
 for _s in range(64):
     SQ64_NAME[91 + (_s & 7) - 10 * (_s >> 3)] = chess.square_name(_s)
@@ -45,8 +51,17 @@ def move_to_uci(m: int) -> str:
     return u + CODE_TO_PROMO.get(p, "") if p else u
 
 
-def run(fen: str, max_depth: int, node_limit: int = 200_000_000):
+def run(
+    fen: str, max_depth: int, node_limit: int = 200_000_000, use_nnue: bool = False,
+):
     board, side, cr, ep = to_arrays(chess.Board(fen))
+    if use_nnue:
+        nnue_ft, nnue_bias, nnue_out, nnue_out_bias = load_network(
+            ROOT / "weights" / "cpp_nnue.bin"
+        )
+        nnue_acc = refresh_accumulator(board, nnue_ft, nnue_bias)
+    else:
+        nnue_acc, nnue_ft, nnue_out, nnue_out_bias = NNUE_ACC, NNUE_FT, NNUE_OUT, 0
     tt = new_tt()
     killers = np.zeros((MAX_PLY, 2), dtype=np.int32)
     history = np.zeros((2, 120, 120), dtype=np.int32)
@@ -63,6 +78,8 @@ def run(fen: str, max_depth: int, node_limit: int = 200_000_000):
             tt[0], tt[1], tt[2], tt[3], tt[4],
             killers, history, counters, node_limit,
             ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best, game_hashes, 1, root_hash,
+            chess.Board(fen).halfmove_clock,
+            nnue_acc, nnue_ft, nnue_out, int(nnue_out_bias), use_nnue,
         )
         dt = time.perf_counter() - t0
         if counters[1] == 1:
@@ -74,9 +91,14 @@ def run(fen: str, max_depth: int, node_limit: int = 200_000_000):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--nnue", action="store_true")
+    args = parser.parse_args()
+    label = "C++ NNUE" if args.nnue else "handcrafted evaluation"
+    print(f"evaluation: {label}\n")
     print("compiling...")
     t0 = time.time()
-    run(chess.STARTING_FEN, 2)
+    run(chess.STARTING_FEN, 2, use_nnue=args.nnue)
     print(f"  compiled in {time.time() - t0:.1f}s (must fit the 60s import budget)\n")
 
     positions = [
@@ -87,7 +109,7 @@ def main() -> None:
     ]
     for name, fen, md in positions:
         print(f"=== {name} ===")
-        rows, _ = run(fen, md)
+        rows, _ = run(fen, md, use_nnue=args.nnue)
         for d, score, mv, nodes, dt, aborted in rows:
             if aborted:
                 print(f"  depth {d}: aborted")
@@ -109,7 +131,7 @@ def main() -> None:
     ]
     ok = 0
     for fen, want, label in tests:
-        rows, best = run(fen, 8)
+        rows, best = run(fen, 8, use_nnue=args.nnue)
         got = move_to_uci(best)
         good = got == want
         ok += good

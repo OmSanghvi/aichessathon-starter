@@ -23,6 +23,7 @@ rather than on the game clock.
 
 import contextlib
 import time
+from pathlib import Path
 
 import chess
 import numpy as np

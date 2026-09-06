@@ -23,6 +23,7 @@ rather than on the game clock.
 
 import contextlib
 import time
+from pathlib import Path
 
 import chess
 import numpy as np
@@ -462,6 +463,199 @@ def perft(
     return total
 
 # ==========================================================================
+# Candidate NNUE evaluator ported from the team's pre-event C++ source
+# ==========================================================================
+
+FT_IN = 768
+HL = 512
+QA = 255
+QB = 64
+SCALE = 400
+NETWORK_BYTES = FT_IN * HL * 2 + HL * 2 + 2 * HL * 2 + 4
+
+
+def load_network(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.int32]:
+    """Load the little-endian ``net.bin`` format emitted by ``train/quant.py``."""
+    raw = np.fromfile(path, dtype=np.uint8)
+    if raw.nbytes != NETWORK_BYTES:
+        raise ValueError(f"{path} has {raw.nbytes} bytes, expected {NETWORK_BYTES}")
+    offset = 0
+    ft_count = FT_IN * HL
+    ft = np.frombuffer(raw, "<i2", ft_count, offset).copy().reshape(FT_IN, HL)
+    offset += ft_count * 2
+    bias = np.frombuffer(raw, "<i2", HL, offset).copy()
+    offset += HL * 2
+    out = np.frombuffer(raw, "<i2", 2 * HL, offset).copy()
+    offset += 2 * HL * 2
+    out_bias = np.frombuffer(raw, "<i4", 1, offset)[0]
+    return ft, bias, out, out_bias
+
+
+@njit(cache=False)
+def evaluate_full(
+    board: "np.ndarray", side: int, ft: "np.ndarray", bias: "np.ndarray",
+    out: "np.ndarray", out_bias: int,
+) -> int:
+    """C++-identical NNUE evaluation, refreshing both accumulators from board."""
+    acc = np.empty((2, HL), dtype=np.int32)
+    for perspective in range(2):
+        for hidden in range(HL):
+            acc[perspective, hidden] = bias[hidden]
+
+    for square in range(64):
+        mailbox_square = 91 + (square & 7) - 10 * (square >> 3)
+        piece = board[mailbox_square]
+        if piece == EMPTY or piece == OFF:  # noqa: SIM109 (Numba scalar path)
+            continue
+        color = 0 if piece <= 6 else 1
+        piece_type = piece - 1 if piece <= 6 else piece - 7
+        for perspective in range(2):
+            relative_color = 0 if color == perspective else 1
+            relative_square = square if perspective == 0 else square ^ 56
+            feature = relative_color * 384 + piece_type * 64 + relative_square
+            for hidden in range(HL):
+                acc[perspective, hidden] += ft[feature, hidden]
+
+    total = np.int64(out_bias)
+    for hidden in range(HL):
+        us = acc[side, hidden]
+        them = acc[1 - side, hidden]
+        if us < 0:
+            us = 0
+        elif us > QA:
+            us = QA
+        if them < 0:
+            them = 0
+        elif them > QA:
+            them = QA
+        total += np.int64(us) * out[hidden]
+        total += np.int64(them) * out[HL + hidden]
+
+    scaled = total * SCALE
+    divisor = QA * QB
+    # C++ integer division truncates toward zero; Python/Numba ``//`` floors.
+    if scaled < 0:
+        return int(-((-scaled) // divisor))
+    return int(scaled // divisor)
+
+
+@njit(cache=False)
+def refresh_accumulator(
+    board: "np.ndarray", ft: "np.ndarray", bias: "np.ndarray",
+) -> "np.ndarray":
+    """Build the two C++-layout accumulators from a mailbox board."""
+    acc = np.empty((2, HL), dtype=np.int32)
+    for perspective in range(2):
+        for hidden in range(HL):
+            acc[perspective, hidden] = bias[hidden]
+    for square in range(64):
+        mailbox_square = 91 + (square & 7) - 10 * (square >> 3)
+        piece = board[mailbox_square]
+        if piece == EMPTY or piece == OFF:  # noqa: SIM109 (Numba scalar path)
+            continue
+        color = 0 if piece <= 6 else 1
+        piece_type = piece - 1 if piece <= 6 else piece - 7
+        for perspective in range(2):
+            relative_color = 0 if color == perspective else 1
+            relative_square = square if perspective == 0 else square ^ 56
+            feature = relative_color * 384 + piece_type * 64 + relative_square
+            for hidden in range(HL):
+                acc[perspective, hidden] += ft[feature, hidden]
+    return acc
+
+
+@njit(cache=False, inline="always")
+def _accumulate(
+    acc: "np.ndarray", piece: int, square120: int, ft: "np.ndarray", sign: int,
+) -> None:
+    square = ((98 - square120) // 10) * 8 + ((square120 - 91) % 10)
+    color = 0 if piece <= 6 else 1
+    piece_type = piece - 1 if piece <= 6 else piece - 7
+    for perspective in range(2):
+        relative_color = 0 if color == perspective else 1
+        relative_square = square if perspective == 0 else square ^ 56
+        feature = relative_color * 384 + piece_type * 64 + relative_square
+        for hidden in range(HL):
+            acc[perspective, hidden] += sign * ft[feature, hidden]
+
+
+@njit(cache=False)
+def apply_move(
+    acc: "np.ndarray", mover: int, placed: int, captured: int, side: int, m: int,
+    ft: "np.ndarray",
+) -> None:
+    """Apply the C++ accumulator delta after ``make_move``; reverse with -1."""
+    frm, to, flags = mv_from(m), mv_to(m), mv_flags(m)
+    _accumulate(acc, mover, frm, ft, -1)
+    _accumulate(acc, placed, to, ft, 1)
+    if captured != EMPTY and captured != OFF:
+        capture_square = to + (10 if side == 0 else -10) if flags == 1 else to
+        _accumulate(acc, captured, capture_square, ft, -1)
+    if flags == 2:
+        if to == 97:
+            _accumulate(acc, 4, 98, ft, -1)
+            _accumulate(acc, 4, 96, ft, 1)
+        elif to == 93:
+            _accumulate(acc, 4, 91, ft, -1)
+            _accumulate(acc, 4, 94, ft, 1)
+        elif to == 27:
+            _accumulate(acc, 10, 28, ft, -1)
+            _accumulate(acc, 10, 26, ft, 1)
+        else:
+            _accumulate(acc, 10, 21, ft, -1)
+            _accumulate(acc, 10, 24, ft, 1)
+
+
+@njit(cache=False)
+def undo_move(
+    acc: "np.ndarray", mover: int, placed: int, captured: int, side: int, m: int,
+    ft: "np.ndarray",
+) -> None:
+    """Reverse ``apply_move`` before the mailbox move is unmade."""
+    frm, to, flags = mv_from(m), mv_to(m), mv_flags(m)
+    _accumulate(acc, placed, to, ft, -1)
+    _accumulate(acc, mover, frm, ft, 1)
+    if captured != EMPTY and captured != OFF:
+        capture_square = to + (10 if side == 0 else -10) if flags == 1 else to
+        _accumulate(acc, captured, capture_square, ft, 1)
+    if flags == 2:
+        if to == 97:
+            _accumulate(acc, 4, 96, ft, -1)
+            _accumulate(acc, 4, 98, ft, 1)
+        elif to == 93:
+            _accumulate(acc, 4, 94, ft, -1)
+            _accumulate(acc, 4, 91, ft, 1)
+        elif to == 27:
+            _accumulate(acc, 10, 26, ft, -1)
+            _accumulate(acc, 10, 28, ft, 1)
+        else:
+            _accumulate(acc, 10, 24, ft, -1)
+            _accumulate(acc, 10, 21, ft, 1)
+
+
+@njit(cache=False)
+def evaluate_accumulator(
+    acc: "np.ndarray", side: int, out: "np.ndarray", out_bias: int,
+) -> int:
+    total = np.int64(out_bias)
+    for hidden in range(HL):
+        us = acc[side, hidden]
+        them = acc[1 - side, hidden]
+        if us < 0:
+            us = 0
+        elif us > QA:
+            us = QA
+        if them < 0:
+            them = 0
+        elif them > QA:
+            them = QA
+        total += np.int64(us) * out[hidden]
+        total += np.int64(them) * out[HL + hidden]
+    scaled = total * SCALE
+    divisor = QA * QB
+    return int(-((-scaled) // divisor)) if scaled < 0 else int(scaled // divisor)
+
+# ==========================================================================
 # Search: alpha-beta, transposition table, quiescence, move ordering
 # ==========================================================================
 
@@ -598,6 +792,12 @@ MOBILITY_BONUS = np.array([0, 0, 2, 1, 0, 0, 0], dtype=np.int32)
 MISSING_SHIELD_PENALTY = 11
 SECOND_SHIELD_PENALTY = 3
 OPEN_KING_FILE_PENALTY = 7
+# A pair of bishops retains pressure across both colour complexes.  PeSTO's
+# individual piece-square entries do not express the *pair* interaction, which
+# made the engine too willing to release a blocked enemy knight by exchanging a
+# bishop.  Keep this modest: it is a positional tie-breaker, not a substitute for
+# tactical search.
+BISHOP_PAIR_BONUS = 35
 
 # For each colour and square, squares on which an enemy pawn would stop a
 # passer. This makes passed-pawn testing a uint64 mask test at evaluation time.
@@ -619,6 +819,10 @@ ZOB_PIECE = _rng.integers(1, 2**63 - 1, size=(13, 120), dtype=np.int64)
 ZOB_SIDE = int(_rng.integers(1, 2**63 - 1, dtype=np.int64))
 ZOB_CASTLE = _rng.integers(1, 2**63 - 1, size=16, dtype=np.int64)
 ZOB_EP = _rng.integers(1, 2**63 - 1, size=120, dtype=np.int64)
+# The ordinary position hash intentionally excludes the FEN halfmove clock for
+# repetition detection.  The TT, however, must distinguish it near a 50-move
+# draw, so it uses this extra key component locally at probe/store time.
+ZOB_HALF = _rng.integers(1, 2**63 - 1, size=101, dtype=np.int64)
 
 TT_BITS = 21  # 2M entries, about 40 MB across the arrays
 TT_SIZE = 1 << TT_BITS
@@ -750,6 +954,19 @@ def zobrist_after_null(h: int, ep: int, zs: int, ze: "np.ndarray") -> int:
 
 
 @njit(cache=False, inline="always")
+def next_halfmove_clock(mover: int, captured: int, halfmove_clock: int) -> int:
+    """Return the FEN halfmove clock after a searched move.
+
+    The 50-move rule resets on every pawn move or capture, including en passant
+    and promotion.  Keeping this state in the recursive search makes a drawn
+    branch score as a draw instead of an invented win or loss.
+    """
+    if mover == 1 or mover == 7 or (captured != EMPTY and captured != OFF):
+        return 0
+    return halfmove_clock + 1
+
+
+@njit(cache=False, inline="always")
 def _mobility(board: "np.ndarray", sq: int, kind: int, side: int) -> int:
     """Count pseudo-legal destinations for a non-pawn, non-king piece."""
     count = 0
@@ -819,6 +1036,8 @@ def evaluate(
     black_pawns = np.uint64(0)
     white_king = 0
     black_king = 0
+    white_bishops = 0
+    black_bishops = 0
     for s in range(64):
         sq = 91 + (s & 7) - 10 * (s >> 3)
         p = board[sq]
@@ -834,6 +1053,8 @@ def evaluate(
             phase += PHASE_VALUE[kind]
             if kind == 6:
                 white_king = sq
+            elif kind == 3:
+                white_bishops += 1
 
             if kind == 1:
                 white_pawns |= np.uint64(1) << np.uint64(s)
@@ -850,6 +1071,8 @@ def evaluate(
             phase += PHASE_VALUE[kind]
             if kind == 6:
                 black_king = sq
+            elif kind == 3:
+                black_bishops += 1
 
             if kind == 1:
                 black_pawns |= np.uint64(1) << np.uint64(s)
@@ -861,6 +1084,10 @@ def evaluate(
     if phase > 24:
         phase = 24
     score = (mg_score * phase + eg_score * (24 - phase)) // 24
+    if white_bishops >= 2:
+        score += BISHOP_PAIR_BONUS
+    if black_bishops >= 2:
+        score -= BISHOP_PAIR_BONUS
     endgame = (npm_w + npm_b) <= ENDGAME_MATERIAL
     for s in range(64):
         sq = 91 + (s & 7) - 10 * (s >> 3)
@@ -1072,7 +1299,7 @@ def late_move_reduction(depth: int, move_number: int) -> int:
     meaningful arena sample. Full re-search remains the safety net when this
     reduced probe unexpectedly raises alpha.
     """
-    return 1 if depth >= 3 and move_number > 3 else 0
+    return 0
 
 
 @njit(cache=False)
@@ -1121,7 +1348,9 @@ def quiesce(
     board: "np.ndarray", side: int, castling: int, ep: int, alpha: int, beta: int,
     offsets: "np.ndarray", n_offsets: "np.ndarray", is_slider: "np.ndarray",
     pst: "np.ndarray", king_mid: "np.ndarray", king_end: "np.ndarray",
-    counters: "np.ndarray", node_limit: int,
+    counters: "np.ndarray", node_limit: int, halfmove_clock: int, qply: int,
+    nnue_acc: "np.ndarray", nnue_ft: "np.ndarray", nnue_out: "np.ndarray",
+    nnue_out_bias: int, use_nnue: bool,
 ) -> int:
     """Resolve forcing leaf positions without allowing an illegal stand-pat.
 
@@ -1137,9 +1366,15 @@ def quiesce(
         counters[1] = 1
         return 0
 
+    if halfmove_clock >= 100:
+        return 0
+
     checked = in_check(board, side, offsets, n_offsets, is_slider)
     if not checked:
-        stand = evaluate(board, side, pst, king_mid, king_end)
+        stand = (
+            evaluate_accumulator(nnue_acc, side, nnue_out, nnue_out_bias)
+            if use_nnue else evaluate(board, side, pst, king_mid, king_end)
+        )
         if stand >= beta:
             return beta
         if stand > alpha:
@@ -1153,11 +1388,15 @@ def quiesce(
         m = buf[i]
         victim = board[mv_to(m)]
         # In check every legal move is an evasion candidate.  Otherwise retain
-        # captures, promotions, and en-passant (whose destination is empty).
-        if checked or (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1:
+        # captures, promotions, en-passant, plus one layer of quiet checks.
+        # The latter closes a common horizon: a quiet forcing check followed by
+        # a capture was invisible to capture-only quiescence.  Restricting it to
+        # qply zero prevents unbounded checking trees.
+        noisy = (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1
+        if checked or noisy or qply == 0:
             if (
                 not checked
-                and mv_promo(m) == 0
+                and not noisy
                 and see(board, side, castling, ep, m, offsets, n_offsets, is_slider) < 0
             ):
                 continue
@@ -1176,14 +1415,36 @@ def quiesce(
             buf[i], buf[best] = buf[best], buf[i]
 
         m = buf[i]
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+            unmake_move(board, side, m, captured)
+            continue
+        # A quiet move was admitted only to test whether it is a forcing check.
+        quiet_noncheck = (
+            not checked
+            and not noisy
+            and not in_check(board, 1 - side, offsets, n_offsets, is_slider)
+        )
+        if quiet_noncheck:
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         legal += 1
         score = -quiesce(board, 1 - side, new_cr, new_ep, -beta, -alpha,
                          offsets, n_offsets, is_slider, pst, king_mid, king_end,
-                         counters, node_limit)
+                         counters, node_limit,
+                         next_halfmove_clock(mover, captured, halfmove_clock),
+                         qply + 1,
+                         nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
         if counters[1] == 1:
             return 0
@@ -1210,11 +1471,17 @@ def negamax(
     zp: "np.ndarray", zs: int, zc: "np.ndarray", ze: "np.ndarray",
     game_hashes: "np.ndarray", game_count: int,
     path_hashes: "np.ndarray", path_count: int,
+    halfmove_clock: int,
+    nnue_acc: "np.ndarray", nnue_ft: "np.ndarray", nnue_out: "np.ndarray",
+    nnue_out_bias: int, use_nnue: bool,
 ) -> int:
     """Alpha-beta with a transposition table, killers, history and quiescence."""
     counters[0] += 1
     if counters[0] > node_limit:
         counters[1] = 1  # aborted
+        return 0
+
+    if halfmove_clock >= 100:
         return 0
 
     checked = in_check(board, side, offsets, n_offsets, is_slider)
@@ -1227,15 +1494,17 @@ def negamax(
     if depth <= 0:
         return quiesce(board, side, castling, ep, alpha, beta,
                        offsets, n_offsets, is_slider, pst, king_mid, king_end,
-                       counters, node_limit)
+                       counters, node_limit, halfmove_clock, 0,
+                       nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
 
     next_path_count = path_count
     if path_count < MAX_PLY:
         path_hashes[path_count] = h
         next_path_count += 1
-    idx = h & TT_MASK
+    tt_h = h ^ int(ZOB_HALF[halfmove_clock])
+    idx = tt_h & TT_MASK
     tt_hit_move = 0
-    if tt_key[idx] == h:
+    if tt_key[idx] == tt_h:
         tt_hit_move = tt_move_a[idx]
         if tt_depth[idx] >= depth:
             f = tt_flag[idx]
@@ -1270,7 +1539,9 @@ def negamax(
                               offsets, n_offsets, is_slider, pst, king_mid, king_end,
                               tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                               killers, history, counters, node_limit, zp, zs, zc, ze,
-                              game_hashes, game_count, path_hashes, next_path_count)
+                              game_hashes, game_count, path_hashes, next_path_count,
+                              halfmove_clock + 1,
+                              nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         if counters[1] == 1:
             return 0
         if null_score >= beta:
@@ -1299,11 +1570,18 @@ def negamax(
             buf[i], buf[pick] = buf[pick], buf[i]
 
         m = buf[i]
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+        child_halfmove_clock = next_halfmove_clock(mover, captured, halfmove_clock)
         child_hash = zobrist_after_move(
             h, board, side, castling, ep, m, captured, new_cr, new_ep, zp, zs, zc, ze
         )
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         legal += 1
@@ -1325,14 +1603,18 @@ def negamax(
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             game_hashes, game_count, path_hashes, next_path_count,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1 - red,
                              -alpha - 1, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             game_hashes, game_count, path_hashes, next_path_count,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
             # Failed high on the null window (or the reduction was too aggressive):
             # re-search with the full window at full depth.
             if score > alpha and (score < beta or red > 0):
@@ -1342,7 +1624,11 @@ def negamax(
                                  king_end, tt_key, tt_score, tt_move_a, tt_depth,
                                  tt_flag, killers, history, counters, node_limit,
                                  zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, next_path_count)
+                                 game_hashes, game_count, path_hashes, next_path_count,
+                                 child_halfmove_clock,
+                                 nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
@@ -1371,8 +1657,8 @@ def negamax(
         flag = TT_UPPER
     elif best_score >= beta:
         flag = TT_LOWER
-    if tt_depth[idx] <= depth or tt_key[idx] != h:
-        tt_key[idx] = h
+    if tt_depth[idx] <= depth or tt_key[idx] != tt_h:
+        tt_key[idx] = tt_h
         tt_score[idx] = _score_to_tt(best_score, ply)
         tt_move_a[idx] = best_move
         tt_depth[idx] = depth
@@ -1393,8 +1679,14 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                 node_limit: int, zp: "np.ndarray", zs: int,
                 zc: "np.ndarray", ze: "np.ndarray",
                 prev_best: int, game_hashes: "np.ndarray",
-                game_count: int, root_hash: int) -> "tuple[int, int]":
+                game_count: int, root_hash: int,
+                halfmove_clock: int,
+                nnue_acc: "np.ndarray", nnue_ft: "np.ndarray",
+                nnue_out: "np.ndarray", nnue_out_bias: int,
+                use_nnue: bool) -> "tuple[int, int]":
     """One iteration of iterative deepening. Returns (score, best_move)."""
+    if halfmove_clock >= 100:
+        return 0, 0
     buf = np.empty(256, dtype=np.int32)
     n = gen_moves(board, side, castling, ep, buf, offsets, n_offsets, is_slider)
     scores = np.empty(n, dtype=np.int32)
@@ -1433,12 +1725,19 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
             root_see = see(
                 board, side, castling, ep, m, offsets, n_offsets, is_slider
             )
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+        child_halfmove_clock = next_halfmove_clock(mover, captured, halfmove_clock)
         child_hash = zobrist_after_move(
             root_hash, board, side, castling, ep, m, captured, new_cr, new_ep,
             zp, zs, zc, ze,
         )
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         # Keep the original root search intact except for an immediately
@@ -1456,6 +1755,8 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
         if catastrophic_capture:
             if catastrophic_fallback == 0:
                 catastrophic_fallback = m
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
 
@@ -1469,21 +1770,29 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             game_hashes, game_count, path_hashes, 0,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                              -alpha - 1, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             game_hashes, game_count, path_hashes, 0,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
             if score > alpha and score < beta:
                 score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                                  -beta, -alpha, 1,
                                  offsets, n_offsets, is_slider, pst, king_mid, king_end,
                                  tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                                  killers, history, counters, node_limit, zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, 0)
+                                 game_hashes, game_count, path_hashes, 0,
+                                 child_halfmove_clock,
+                                 nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
@@ -1560,6 +1869,24 @@ class _Engine:
         # Measured node rate, refined after every real search so the node budget
         # tracks the machine we are actually running on rather than a guess.
         self.nps = 1_500_000.0
+        # This is the team's own pre-event trained integer NNUE, ported from
+        # the public C++ implementation. It remains off by default: a 20-game
+        # A/B run did not show a strength gain over the established evaluator.
+        # Keeping the path wired lets a retrained network be tested without a
+        # risky search rewrite.
+        self.use_nnue = False
+        self.nnue_acc = np.zeros((2, 512), dtype=np.int32)
+        self.nnue_ft = np.zeros((768, 512), dtype=np.int16)
+        self.nnue_bias = np.zeros(512, dtype=np.int16)
+        self.nnue_out = np.zeros(1024, dtype=np.int16)
+        self.nnue_out_bias = 0
+        if self.use_nnue:
+            network_path = Path(__file__).resolve().parent / "weights" / "cpp_nnue.bin"
+            nnue_ft, nnue_bias, nnue_out, nnue_out_bias = load_network(network_path)
+            self.nnue_ft = nnue_ft
+            self.nnue_bias = nnue_bias
+            self.nnue_out = nnue_out
+            self.nnue_out_bias = int(nnue_out_bias)
 
     def search(self, board: chess.Board, soft_s: float, hard_s: float) -> int:
         arr, side, cr, ep = _to_arrays(board)
@@ -1572,6 +1899,10 @@ class _Engine:
         self.history //= 2
         best = 0
         start = time.time()
+        nnue_acc = (
+            refresh_accumulator(arr, self.nnue_ft, self.nnue_bias)
+            if self.use_nnue else self.nnue_acc
+        )
 
         for depth in range(1, MAX_PLY):
             elapsed = time.time() - start
@@ -1590,7 +1921,9 @@ class _Engine:
                 self.tt[0], self.tt[1], self.tt[2], self.tt[3], self.tt[4],
                 self.killers, self.history, counters, node_limit,
                 ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
-                self.game_hashes, self.game_count, root_hash,
+                self.game_hashes, self.game_count, root_hash, board.halfmove_clock,
+                nnue_acc, self.nnue_ft, self.nnue_out, int(self.nnue_out_bias),
+                self.use_nnue,
             )
             spent = time.time() - start
             if spent > 0.02 and counters[0] > 0:
@@ -1654,7 +1987,12 @@ def _warmup() -> None:
     """Compile every jitted function at import, with the argument types the real
     calls use, so compilation lands in the 60 second init budget."""
     with contextlib.suppress(Exception):
-        _ENGINE.search(chess.Board(), 0.05, 0.10)
+        # Refreshing the 2x512 accumulator itself compiles on the first call.
+        # A 50 ms soft budget expires before ``search_root`` gets invoked, which
+        # used to leave its seven-second Numba compilation on our first move.
+        # This generous soft budget lets the real recursive signature compile;
+        # the one-second hard budget stops immediately after that compilation.
+        _ENGINE.search(chess.Board(), 20.0, 1.0)
     # Discard anything the warmup learned so the first real move starts clean.
     _ENGINE.tt = new_tt()
     _ENGINE.history[:] = 0

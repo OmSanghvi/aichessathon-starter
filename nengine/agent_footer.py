@@ -60,6 +60,24 @@ class _Engine:
         # Measured node rate, refined after every real search so the node budget
         # tracks the machine we are actually running on rather than a guess.
         self.nps = 1_500_000.0
+        # This is the team's own pre-event trained integer NNUE, ported from
+        # the public C++ implementation. It remains off by default: a 20-game
+        # A/B run did not show a strength gain over the established evaluator.
+        # Keeping the path wired lets a retrained network be tested without a
+        # risky search rewrite.
+        self.use_nnue = False
+        self.nnue_acc = np.zeros((2, 512), dtype=np.int32)
+        self.nnue_ft = np.zeros((768, 512), dtype=np.int16)
+        self.nnue_bias = np.zeros(512, dtype=np.int16)
+        self.nnue_out = np.zeros(1024, dtype=np.int16)
+        self.nnue_out_bias = 0
+        if self.use_nnue:
+            network_path = Path(__file__).resolve().parent / "weights" / "cpp_nnue.bin"
+            nnue_ft, nnue_bias, nnue_out, nnue_out_bias = load_network(network_path)
+            self.nnue_ft = nnue_ft
+            self.nnue_bias = nnue_bias
+            self.nnue_out = nnue_out
+            self.nnue_out_bias = int(nnue_out_bias)
 
     def search(self, board: chess.Board, soft_s: float, hard_s: float) -> int:
         arr, side, cr, ep = _to_arrays(board)
@@ -72,6 +90,10 @@ class _Engine:
         self.history //= 2
         best = 0
         start = time.time()
+        nnue_acc = (
+            refresh_accumulator(arr, self.nnue_ft, self.nnue_bias)
+            if self.use_nnue else self.nnue_acc
+        )
 
         for depth in range(1, MAX_PLY):
             elapsed = time.time() - start
@@ -90,7 +112,9 @@ class _Engine:
                 self.tt[0], self.tt[1], self.tt[2], self.tt[3], self.tt[4],
                 self.killers, self.history, counters, node_limit,
                 ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
-                self.game_hashes, self.game_count, root_hash,
+                self.game_hashes, self.game_count, root_hash, board.halfmove_clock,
+                nnue_acc, self.nnue_ft, self.nnue_out, int(self.nnue_out_bias),
+                self.use_nnue,
             )
             spent = time.time() - start
             if spent > 0.02 and counters[0] > 0:
@@ -154,7 +178,12 @@ def _warmup() -> None:
     """Compile every jitted function at import, with the argument types the real
     calls use, so compilation lands in the 60 second init budget."""
     with contextlib.suppress(Exception):
-        _ENGINE.search(chess.Board(), 0.05, 0.10)
+        # Refreshing the 2x512 accumulator itself compiles on the first call.
+        # A 50 ms soft budget expires before ``search_root`` gets invoked, which
+        # used to leave its seven-second Numba compilation on our first move.
+        # This generous soft budget lets the real recursive signature compile;
+        # the one-second hard budget stops immediately after that compilation.
+        _ENGINE.search(chess.Board(), 20.0, 1.0)
     # Discard anything the warmup learned so the first real move starts clean.
     _ENGINE.tt = new_tt()
     _ENGINE.history[:] = 0

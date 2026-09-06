@@ -1,0 +1,50 @@
+game 1/20: audited 40, mined 2
+game 2/20: audited 80, mined 2
+game 3/20: audited 120, mined 2
+game 4/20: audited 147, mined 2
+game 5/20: audited 187, mined 2
+game 6/20: audited 227, mined 2
+game 7/20: audited 267, mined 4
+game 8/20: audited 307, mined 6
+game 9/20: audited 345, mined 7
+game 10/20: audited 373, mined 7
+game 11/20: audited 413, mined 9
+game 12/20: audited 444, mined 9
+game 13/20: audited 484, mined 10
+game 14/20: audited 524, mined 10
+game 15/20: audited 564, mined 11
+game 16/20: audited 604, mined 12
+game 17/20: audited 644, mined 12
+game 18/20: audited 684, mined 12
+game 19/20: audited 724, mined 15
+game 20/20: audited 764, mined 19
+wrote nnue2/blunders/shard_0000.npz: 38 child positions from 19 blunders
+shard_0000.npz: 38 rows
+
+total positions: 38
+  WARNING: v1 had 500k and lost. 2M+ is the target.
+
+label cp: mean -30.3  std 286.3  min -964  max 485
+    p1      -913
+    p10     -311
+    p25     -124
+    p50        2
+    p75      133
+    p90      254
+    p99      424
+  fraction at the clamp: 0.00%
+
+pieces per position: mean 22.5  min 13  max 32
+
+king-bucket coverage (mover-relative regions):
+    bucket 0:  26.3%
+    bucket 1:  31.6%
+    bucket 2:  21.1%
+    bucket 3:  21.1%
+    bucket 4:   0.0%
+    bucket 5:   0.0%
+    bucket 6:   0.0%
+    bucket 7:   0.0%
+  WARNING: a bucket is nearly unseen; that part of the net will be untrained
+Mined corpus: nnue2/blunders
+Use it in training with: --hard-data-dir nnue2/blunders --hard-repeat 4

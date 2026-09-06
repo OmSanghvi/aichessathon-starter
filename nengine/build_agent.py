@@ -15,6 +15,7 @@ HEADER = ROOT / "nengine" / "agent_header.py"
 FOOTER = ROOT / "nengine" / "agent_footer.py"
 BOARD = ROOT / "nengine" / "board.py"
 SEARCH = ROOT / "nengine" / "search.py"
+CPP_NNUE = ROOT / "nengine" / "cpp_nnue.py"
 OUT = ROOT / "agent.py"
 
 
@@ -33,6 +34,10 @@ def main() -> None:
         "# python-chess; see nengine/test_perft.py)\n"
         "# " + "=" * 74 + "\n\n",
         body_from(BOARD, "def initial_board"),
+        "\n# " + "=" * 74 + "\n"
+        "# Candidate NNUE evaluator ported from the team's pre-event C++ source\n"
+        "# " + "=" * 74 + "\n\n",
+        body_from(CPP_NNUE, "FT_IN = 768"),
         "\n# " + "=" * 74 + "\n"
         "# Search: alpha-beta, transposition table, quiescence, move ordering\n"
         "# " + "=" * 74 + "\n\n",

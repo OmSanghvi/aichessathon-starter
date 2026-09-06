@@ -1,0 +1,18 @@
+loaded 6,643,077 positions from 67 shard(s)
+residual mode: target is label - nengine static score
+  computed 6,643,077 anchors in 3s
+  residual: mean +132  std 363  vs raw label std 642
+epoch   1/60  train 0.00804  val 0.00553  val_MAE   96.3 cp  lr 2.00e-03  (98s)
+epoch   2/60  train 0.00518  val 0.00487  val_MAE   89.0 cp  lr 1.99e-03  (95s)
+epoch   3/60  train 0.00461  val 0.00458  val_MAE   86.5 cp  lr 1.99e-03  (95s)
+epoch   4/60  train 0.00430  val 0.00442  val_MAE   85.2 cp  lr 1.98e-03  (92s)
+epoch   5/60  train 0.00408  val 0.00425  val_MAE   82.3 cp  lr 1.97e-03  (92s)
+epoch   6/60  train 0.00392  val 0.00417  val_MAE   81.6 cp  lr 1.95e-03  (94s)
+epoch   7/60  train 0.00379  val 0.00415  val_MAE   81.5 cp  lr 1.93e-03  (98s)
+epoch   8/60  train 0.00368  val 0.00409  val_MAE   80.5 cp  lr 1.91e-03  (96s)
+epoch   9/60  train 0.00359  val 0.00406  val_MAE   80.2 cp  lr 1.89e-03  (92s)
+epoch  10/60  train 0.00352  val 0.00403  val_MAE   80.2 cp  lr 1.87e-03  (92s)
+epoch  11/60  train 0.00346  val 0.00400  val_MAE   79.5 cp  lr 1.84e-03  (94s)
+epoch  12/60  train 0.00340  val 0.00400  val_MAE   78.9 cp  lr 1.81e-03  (97s)
+epoch  13/60  train 0.00334  val 0.00398  val_MAE   79.0 cp  lr 1.78e-03  (102s)
+epoch  14/60  train 0.00329  val 0.00397  val_MAE   79.1 cp  lr 1.74e-03  (99s)

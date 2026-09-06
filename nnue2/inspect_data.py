@@ -8,6 +8,7 @@ Looks for the specific ways this dataset went wrong in v1:
   * king buckets unevenly covered, which would leave part of the net untrained
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -22,7 +23,10 @@ DATA = Path(__file__).resolve().parent / "data"
 
 
 def main() -> None:
-    shards = sorted(DATA.glob("shard_*.npz"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", default=str(DATA))
+    args = parser.parse_args()
+    shards = sorted(Path(args.data_dir).glob("shard_*.npz"))
     if not shards:
         raise SystemExit("no shards in nnue2/data")
 
@@ -63,8 +67,7 @@ def main() -> None:
         print("  WARNING: endgame-skewed; raise --min-pieces or lower --max-plies")
 
     share = bucket_counts / max(bucket_counts.sum(), 1)
-    print("\nking-bucket coverage (0=back/queenside 1=back/kingside "
-          "2=advanced/queenside 3=advanced/kingside):")
+    print("\nking-bucket coverage (mover-relative regions):")
     for b in range(KING_BUCKETS):
         print(f"    bucket {b}: {share[b]:6.1%}")
     if share.min() < 0.02:

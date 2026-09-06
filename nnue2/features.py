@@ -32,12 +32,13 @@ That exact mismatch was the v1 bug.
 import chess
 import numpy as np
 
-# 4 buckets: king on the kingside or queenside, back two ranks or advanced. Enough
-# to express "castled and safe" versus "walked up the board", which is the
-# distinction the engine currently cannot make, without multiplying the parameter
-# count so far that limited data cannot fill it.
-KING_BUCKETS = 4
-NUM_FEATURES = KING_BUCKETS * 12 * 64  # 3072
+# Eight king regions: four two-file zones, each split between the back two ranks
+# and the rest of the board in the mover's frame. Four regions could not tell g1
+# from e1; sixteen 2x2 regions left most advanced-king regions untrained. This
+# shape keeps local castling geometry while giving every feature family enough of
+# the 6.6M-position data. Raw boards make the upgrade free to regenerate.
+KING_BUCKETS = 8
+NUM_FEATURES = KING_BUCKETS * 12 * 64  # 6144
 MAX_PIECES = 32
 
 # Labels are clamped here. Beyond this the exact number stops changing which move
@@ -52,9 +53,8 @@ def king_bucket(king_square: int) -> int:
     """Which region the mover's king is in, in the mover's own frame."""
     file_ = king_square & 7
     rank = king_square >> 3
-    kingside = 1 if file_ >= 4 else 0
     advanced = 1 if rank >= 2 else 0
-    return advanced * 2 + kingside
+    return advanced * 4 + (file_ // 2)
 
 
 def board_to_codes(board: chess.Board) -> tuple[np.ndarray, int]:

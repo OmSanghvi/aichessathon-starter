@@ -3,8 +3,8 @@
 Built on the perft-verified generator in nengine/board.py, which runs at 15-22M
 nodes a second against the pure-Python engine's 55,000. IDEAS.md prescribes exactly
 this shape - "negamax with alpha-beta is the whole game", ordering first, a
-transposition table, iterative deepening, and quiescence with captures only - and
-says the payoff is the depth the speed buys.
+transposition table, iterative deepening, and quiescence with captures and
+check evasions - and says the payoff is the depth the speed buys.
 
 DESIGN NOTES
 
@@ -49,6 +49,7 @@ from nengine.board import (
     mv_to,
     unmake_move,
 )
+from nengine.cpp_nnue import apply_move, evaluate_accumulator, undo_move
 
 MATE = 30000
 INF = 32000
@@ -183,6 +184,12 @@ MOBILITY_BONUS = np.array([0, 0, 2, 1, 0, 0, 0], dtype=np.int32)
 MISSING_SHIELD_PENALTY = 11
 SECOND_SHIELD_PENALTY = 3
 OPEN_KING_FILE_PENALTY = 7
+# A pair of bishops retains pressure across both colour complexes.  PeSTO's
+# individual piece-square entries do not express the *pair* interaction, which
+# made the engine too willing to release a blocked enemy knight by exchanging a
+# bishop.  Keep this modest: it is a positional tie-breaker, not a substitute for
+# tactical search.
+BISHOP_PAIR_BONUS = 35
 
 # For each colour and square, squares on which an enemy pawn would stop a
 # passer. This makes passed-pawn testing a uint64 mask test at evaluation time.
@@ -204,6 +211,10 @@ ZOB_PIECE = _rng.integers(1, 2**63 - 1, size=(13, 120), dtype=np.int64)
 ZOB_SIDE = int(_rng.integers(1, 2**63 - 1, dtype=np.int64))
 ZOB_CASTLE = _rng.integers(1, 2**63 - 1, size=16, dtype=np.int64)
 ZOB_EP = _rng.integers(1, 2**63 - 1, size=120, dtype=np.int64)
+# The ordinary position hash intentionally excludes the FEN halfmove clock for
+# repetition detection.  The TT, however, must distinguish it near a 50-move
+# draw, so it uses this extra key component locally at probe/store time.
+ZOB_HALF = _rng.integers(1, 2**63 - 1, size=101, dtype=np.int64)
 
 TT_BITS = 21  # 2M entries, about 40 MB across the arrays
 TT_SIZE = 1 << TT_BITS
@@ -335,6 +346,19 @@ def zobrist_after_null(h: int, ep: int, zs: int, ze: "np.ndarray") -> int:
 
 
 @njit(cache=False, inline="always")
+def next_halfmove_clock(mover: int, captured: int, halfmove_clock: int) -> int:
+    """Return the FEN halfmove clock after a searched move.
+
+    The 50-move rule resets on every pawn move or capture, including en passant
+    and promotion.  Keeping this state in the recursive search makes a drawn
+    branch score as a draw instead of an invented win or loss.
+    """
+    if mover == 1 or mover == 7 or (captured != EMPTY and captured != OFF):
+        return 0
+    return halfmove_clock + 1
+
+
+@njit(cache=False, inline="always")
 def _mobility(board: "np.ndarray", sq: int, kind: int, side: int) -> int:
     """Count pseudo-legal destinations for a non-pawn, non-king piece."""
     count = 0
@@ -404,6 +428,8 @@ def evaluate(
     black_pawns = np.uint64(0)
     white_king = 0
     black_king = 0
+    white_bishops = 0
+    black_bishops = 0
     for s in range(64):
         sq = 91 + (s & 7) - 10 * (s >> 3)
         p = board[sq]
@@ -419,6 +445,8 @@ def evaluate(
             phase += PHASE_VALUE[kind]
             if kind == 6:
                 white_king = sq
+            elif kind == 3:
+                white_bishops += 1
 
             if kind == 1:
                 white_pawns |= np.uint64(1) << np.uint64(s)
@@ -435,6 +463,8 @@ def evaluate(
             phase += PHASE_VALUE[kind]
             if kind == 6:
                 black_king = sq
+            elif kind == 3:
+                black_bishops += 1
 
             if kind == 1:
                 black_pawns |= np.uint64(1) << np.uint64(s)
@@ -446,6 +476,10 @@ def evaluate(
     if phase > 24:
         phase = 24
     score = (mg_score * phase + eg_score * (24 - phase)) // 24
+    if white_bishops >= 2:
+        score += BISHOP_PAIR_BONUS
+    if black_bishops >= 2:
+        score -= BISHOP_PAIR_BONUS
     endgame = (npm_w + npm_b) <= ENDGAME_MATERIAL
     for s in range(64):
         sq = 91 + (s & 7) - 10 * (s >> 3)
@@ -657,7 +691,7 @@ def late_move_reduction(depth: int, move_number: int) -> int:
     meaningful arena sample. Full re-search remains the safety net when this
     reduced probe unexpectedly raises alpha.
     """
-    return 1 if depth >= 3 and move_number > 3 else 0
+    return 0
 
 
 @njit(cache=False)
@@ -706,7 +740,9 @@ def quiesce(
     board: "np.ndarray", side: int, castling: int, ep: int, alpha: int, beta: int,
     offsets: "np.ndarray", n_offsets: "np.ndarray", is_slider: "np.ndarray",
     pst: "np.ndarray", king_mid: "np.ndarray", king_end: "np.ndarray",
-    counters: "np.ndarray", node_limit: int,
+    counters: "np.ndarray", node_limit: int, halfmove_clock: int, qply: int,
+    nnue_acc: "np.ndarray", nnue_ft: "np.ndarray", nnue_out: "np.ndarray",
+    nnue_out_bias: int, use_nnue: bool,
 ) -> int:
     """Resolve forcing leaf positions without allowing an illegal stand-pat.
 
@@ -722,9 +758,15 @@ def quiesce(
         counters[1] = 1
         return 0
 
+    if halfmove_clock >= 100:
+        return 0
+
     checked = in_check(board, side, offsets, n_offsets, is_slider)
     if not checked:
-        stand = evaluate(board, side, pst, king_mid, king_end)
+        stand = (
+            evaluate_accumulator(nnue_acc, side, nnue_out, nnue_out_bias)
+            if use_nnue else evaluate(board, side, pst, king_mid, king_end)
+        )
         if stand >= beta:
             return beta
         if stand > alpha:
@@ -738,11 +780,15 @@ def quiesce(
         m = buf[i]
         victim = board[mv_to(m)]
         # In check every legal move is an evasion candidate.  Otherwise retain
-        # captures, promotions, and en-passant (whose destination is empty).
-        if checked or (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1:
+        # captures, promotions, en-passant, plus one layer of quiet checks.
+        # The latter closes a common horizon: a quiet forcing check followed by
+        # a capture was invisible to capture-only quiescence.  Restricting it to
+        # qply zero prevents unbounded checking trees.
+        noisy = (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1
+        if checked or noisy or qply == 0:
             if (
                 not checked
-                and mv_promo(m) == 0
+                and not noisy
                 and see(board, side, castling, ep, m, offsets, n_offsets, is_slider) < 0
             ):
                 continue
@@ -761,14 +807,36 @@ def quiesce(
             buf[i], buf[best] = buf[best], buf[i]
 
         m = buf[i]
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+            unmake_move(board, side, m, captured)
+            continue
+        # A quiet move was admitted only to test whether it is a forcing check.
+        quiet_noncheck = (
+            not checked
+            and not noisy
+            and not in_check(board, 1 - side, offsets, n_offsets, is_slider)
+        )
+        if quiet_noncheck:
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         legal += 1
         score = -quiesce(board, 1 - side, new_cr, new_ep, -beta, -alpha,
                          offsets, n_offsets, is_slider, pst, king_mid, king_end,
-                         counters, node_limit)
+                         counters, node_limit,
+                         next_halfmove_clock(mover, captured, halfmove_clock),
+                         qply + 1,
+                         nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
         if counters[1] == 1:
             return 0
@@ -795,11 +863,17 @@ def negamax(
     zp: "np.ndarray", zs: int, zc: "np.ndarray", ze: "np.ndarray",
     game_hashes: "np.ndarray", game_count: int,
     path_hashes: "np.ndarray", path_count: int,
+    halfmove_clock: int,
+    nnue_acc: "np.ndarray", nnue_ft: "np.ndarray", nnue_out: "np.ndarray",
+    nnue_out_bias: int, use_nnue: bool,
 ) -> int:
     """Alpha-beta with a transposition table, killers, history and quiescence."""
     counters[0] += 1
     if counters[0] > node_limit:
         counters[1] = 1  # aborted
+        return 0
+
+    if halfmove_clock >= 100:
         return 0
 
     checked = in_check(board, side, offsets, n_offsets, is_slider)
@@ -812,15 +886,17 @@ def negamax(
     if depth <= 0:
         return quiesce(board, side, castling, ep, alpha, beta,
                        offsets, n_offsets, is_slider, pst, king_mid, king_end,
-                       counters, node_limit)
+                       counters, node_limit, halfmove_clock, 0,
+                       nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
 
     next_path_count = path_count
     if path_count < MAX_PLY:
         path_hashes[path_count] = h
         next_path_count += 1
-    idx = h & TT_MASK
+    tt_h = h ^ int(ZOB_HALF[halfmove_clock])
+    idx = tt_h & TT_MASK
     tt_hit_move = 0
-    if tt_key[idx] == h:
+    if tt_key[idx] == tt_h:
         tt_hit_move = tt_move_a[idx]
         if tt_depth[idx] >= depth:
             f = tt_flag[idx]
@@ -855,7 +931,9 @@ def negamax(
                               offsets, n_offsets, is_slider, pst, king_mid, king_end,
                               tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                               killers, history, counters, node_limit, zp, zs, zc, ze,
-                              game_hashes, game_count, path_hashes, next_path_count)
+                              game_hashes, game_count, path_hashes, next_path_count,
+                              halfmove_clock + 1,
+                              nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         if counters[1] == 1:
             return 0
         if null_score >= beta:
@@ -884,11 +962,18 @@ def negamax(
             buf[i], buf[pick] = buf[pick], buf[i]
 
         m = buf[i]
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+        child_halfmove_clock = next_halfmove_clock(mover, captured, halfmove_clock)
         child_hash = zobrist_after_move(
             h, board, side, castling, ep, m, captured, new_cr, new_ep, zp, zs, zc, ze
         )
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         legal += 1
@@ -910,14 +995,18 @@ def negamax(
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             game_hashes, game_count, path_hashes, next_path_count,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1 - red,
                              -alpha - 1, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             game_hashes, game_count, path_hashes, next_path_count,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
             # Failed high on the null window (or the reduction was too aggressive):
             # re-search with the full window at full depth.
             if score > alpha and (score < beta or red > 0):
@@ -927,7 +1016,11 @@ def negamax(
                                  king_end, tt_key, tt_score, tt_move_a, tt_depth,
                                  tt_flag, killers, history, counters, node_limit,
                                  zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, next_path_count)
+                                 game_hashes, game_count, path_hashes, next_path_count,
+                                 child_halfmove_clock,
+                                 nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
@@ -956,8 +1049,8 @@ def negamax(
         flag = TT_UPPER
     elif best_score >= beta:
         flag = TT_LOWER
-    if tt_depth[idx] <= depth or tt_key[idx] != h:
-        tt_key[idx] = h
+    if tt_depth[idx] <= depth or tt_key[idx] != tt_h:
+        tt_key[idx] = tt_h
         tt_score[idx] = _score_to_tt(best_score, ply)
         tt_move_a[idx] = best_move
         tt_depth[idx] = depth
@@ -978,8 +1071,14 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                 node_limit: int, zp: "np.ndarray", zs: int,
                 zc: "np.ndarray", ze: "np.ndarray",
                 prev_best: int, game_hashes: "np.ndarray",
-                game_count: int, root_hash: int) -> "tuple[int, int]":
+                game_count: int, root_hash: int,
+                halfmove_clock: int,
+                nnue_acc: "np.ndarray", nnue_ft: "np.ndarray",
+                nnue_out: "np.ndarray", nnue_out_bias: int,
+                use_nnue: bool) -> "tuple[int, int]":
     """One iteration of iterative deepening. Returns (score, best_move)."""
+    if halfmove_clock >= 100:
+        return 0, 0
     buf = np.empty(256, dtype=np.int32)
     n = gen_moves(board, side, castling, ep, buf, offsets, n_offsets, is_slider)
     scores = np.empty(n, dtype=np.int32)
@@ -1018,12 +1117,19 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
             root_see = see(
                 board, side, castling, ep, m, offsets, n_offsets, is_slider
             )
+        mover = board[mv_from(m)]
         captured, new_cr, new_ep = make_move(board, side, castling, ep, m)
+        placed = board[mv_to(m)]
+        if use_nnue:
+            apply_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
+        child_halfmove_clock = next_halfmove_clock(mover, captured, halfmove_clock)
         child_hash = zobrist_after_move(
             root_hash, board, side, castling, ep, m, captured, new_cr, new_ep,
             zp, zs, zc, ze,
         )
         if in_check(board, side, offsets, n_offsets, is_slider):
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
         # Keep the original root search intact except for an immediately
@@ -1041,6 +1147,8 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
         if catastrophic_capture:
             if catastrophic_fallback == 0:
                 catastrophic_fallback = m
+            if use_nnue:
+                undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
             unmake_move(board, side, m, captured)
             continue
 
@@ -1054,21 +1162,29 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             game_hashes, game_count, path_hashes, 0,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                              -alpha - 1, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             game_hashes, game_count, path_hashes, 0,
+                             child_halfmove_clock,
+                             nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
             if score > alpha and score < beta:
                 score = -negamax(board, 1 - side, new_cr, new_ep, child_hash, depth - 1,
                                  -beta, -alpha, 1,
                                  offsets, n_offsets, is_slider, pst, king_mid, king_end,
                                  tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
                                  killers, history, counters, node_limit, zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, 0)
+                                 game_hashes, game_count, path_hashes, 0,
+                                 child_halfmove_clock,
+                                 nnue_acc, nnue_ft, nnue_out, nnue_out_bias, use_nnue)
+        if use_nnue:
+            undo_move(nnue_acc, mover, placed, captured, side, m, nnue_ft)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
