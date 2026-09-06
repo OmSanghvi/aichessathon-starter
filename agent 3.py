@@ -473,14 +473,6 @@ MAX_PLY = 64
 # Material, in centipawns, indexed by piece type 1..6.
 PIECE_VALUE = np.array([0, 100, 320, 330, 500, 900, 0], dtype=np.int32)
 
-# Split movement directions by slider class for the mailbox SEE. These are
-# constants rather than slices of ``OFFSETS`` so Numba keeps the inner scan
-# simple and monomorphic.
-N_OFFSETS_SEARCH = np.array([-21, -19, -12, -8, 8, 12, 19, 21], dtype=np.int8)
-BISHOP_OFFSETS = np.array([-11, -9, 9, 11], dtype=np.int8)
-ROOK_OFFSETS = np.array([-10, -1, 1, 10], dtype=np.int8)
-KING_OFFSETS_SEARCH = np.array([-11, -10, -9, -1, 1, 9, 10, 11], dtype=np.int8)
-
 # Piece-square tables from White's point of view, a1..h8, mirrored for Black.
 _PAWN = [
     0, 0, 0, 0, 0, 0, 0, 0,
@@ -560,47 +552,25 @@ for _k, _t in ((1, _PAWN), (2, _KNIGHT), (3, _BISHOP), (4, _ROOK), (5, _QUEEN)):
 PST_KING_MID = np.array(_KING_MID, dtype=np.int32)
 PST_KING_END = np.array(_KING_END, dtype=np.int32)
 
-# Tapered PeSTO evaluation from this team's pre-event C++ engine. The source
-# tables are a8-first; mailbox square indices are a1-first, so White uses
-# ``square ^ 56`` and Black uses ``square``. A material phase blends middlegame
-# and endgame scores rather than abruptly switching the whole evaluation.
-MG_VALUE = np.array([0, 82, 337, 365, 477, 1025, 0], dtype=np.int32)
-EG_VALUE = np.array([0, 94, 281, 297, 512, 936, 0], dtype=np.int32)
-PHASE_VALUE = np.array([0, 0, 1, 1, 2, 4, 0], dtype=np.int32)
-MG_PESTO = np.array([
-0,0,0,0,0,0,0,0,98,134,61,95,68,126,34,-11,-6,7,26,31,65,56,25,-20,-14,13,6,21,23,12,17,-23,-27,-2,-5,12,17,6,10,-25,-26,-4,-4,-10,3,3,33,-12,-35,-1,-20,-23,-15,24,38,-22,0,0,0,0,0,0,0,0,
--167,-89,-34,-49,61,-97,-15,-107,-73,-41,72,36,23,62,7,-17,-47,60,37,65,84,129,73,44,-9,17,19,53,37,69,18,22,-13,4,16,13,28,19,21,-8,-23,-9,12,10,19,17,25,-16,-29,-53,-12,-3,-1,18,-14,-19,-105,-21,-58,-33,-17,-28,-19,-23,
--29,4,-82,-37,-25,-42,7,-8,-26,16,-18,-13,30,59,18,-47,-16,37,43,40,35,50,37,-2,-4,5,19,50,37,37,7,-2,-6,13,13,26,34,12,10,4,0,15,15,15,14,27,18,10,4,15,16,0,7,21,33,1,-33,-3,-14,-21,-13,-12,-39,-21,
-32,42,32,51,63,9,31,43,27,32,58,62,80,67,26,44,-5,19,26,36,17,45,61,16,-24,-11,7,26,24,35,-8,-20,-36,-26,-12,-1,9,-7,6,-23,-45,-25,-16,-17,3,0,-5,-33,-44,-16,-20,-9,-1,11,-6,-71,-19,-13,1,17,16,7,-37,-26,
--28,0,29,12,59,44,43,45,-24,-39,-5,1,-16,57,28,54,-13,-17,7,8,29,56,47,57,-27,-27,-16,-16,-1,17,-2,1,-9,-26,-9,-10,-2,-4,3,-3,-14,2,-11,-2,-5,2,14,5,-35,-8,11,2,8,15,-3,1,-1,-18,-9,10,-15,-25,-31,-50,
--65,23,16,-15,-56,-34,2,13,29,-1,-20,-7,-8,-4,-38,-29,-9,24,2,-16,-20,6,22,-22,-17,-20,-12,-27,-30,-25,-14,-36,-49,-1,-27,-39,-46,-44,-33,-51,-14,-14,-22,-46,-44,-30,-15,-27,1,7,-8,-64,-43,-16,9,8,-15,36,12,-54,8,-28,24,14,
-], dtype=np.int32).reshape(6, 64)
-EG_PESTO = np.array([
-0,0,0,0,0,0,0,0,178,173,158,134,147,132,165,187,94,100,85,67,56,53,82,84,32,24,13,5,-2,4,17,17,13,9,-3,-7,-7,-8,3,-1,4,7,-6,1,0,-5,-1,-8,13,8,8,10,13,0,2,-7,0,0,0,0,0,0,0,0,
--58,-38,-13,-28,-31,-27,-63,-99,-25,-8,-25,-2,-9,-25,-24,-52,-24,-20,10,9,-1,-9,-19,-41,-17,3,22,22,22,11,8,-18,-18,-6,16,25,16,17,4,-18,-23,-3,-1,15,10,-3,-20,-22,-42,-20,-10,-5,-2,-20,-23,-44,-29,-51,-23,-15,-22,-18,-50,-64,
--14,-21,-11,-8,-7,-9,-17,-24,-8,-4,7,-12,-3,-13,-4,-14,2,-8,0,-1,-2,6,0,4,-3,9,12,9,14,10,3,2,-6,3,13,19,7,10,-3,-9,-12,-3,8,10,13,3,-7,-15,-14,-18,-7,-1,4,-9,-15,-27,-23,-9,-23,-5,-9,-16,-5,-17,
-13,10,18,15,12,12,8,5,11,13,13,11,-3,3,8,3,7,7,7,5,4,-3,-5,-3,4,3,13,1,2,1,-1,2,3,5,8,4,-5,-6,-8,-11,-4,0,-5,-1,-7,-12,-8,-16,-6,-6,0,2,-9,-9,-11,-3,-9,2,3,-1,-5,-13,4,-20,
--9,22,22,27,27,19,10,20,-17,20,32,41,58,25,30,0,-20,6,9,49,47,35,19,9,3,22,24,45,57,40,57,36,-18,28,19,47,31,34,39,23,-16,-27,15,6,9,17,10,5,-22,-23,-30,-16,-16,-23,-36,-32,-33,-28,-22,-43,-5,-32,-20,-41,
--74,-35,-18,-18,-11,15,4,-17,-12,17,14,17,17,38,23,11,10,17,23,15,20,45,44,13,-8,22,24,27,26,33,26,3,-18,-4,21,24,27,23,9,-11,-19,-3,11,21,23,16,7,-9,-27,-11,4,13,14,4,-5,-17,-53,-34,-21,-11,-28,-14,-24,-43,
-], dtype=np.int32).reshape(6, 64)
-
 # Non-pawn material below which the king centralises.
 ENDGAME_MATERIAL = 1300
 
-# Small, deliberately conservative positional terms. They are integer-only scans
-# of the mailbox, so they cost far less than an extra searched ply. Keeping them
-# below a pawn prevents static opinion from overriding tactics.
+# Small, deliberately conservative positional terms.  They are all integer-only
+# scans of the mailbox, so they cost far less than an extra searched ply.  Keeping
+# the values below a pawn prevents a static opinion from overriding tactics.
 PASSED_PAWN_BONUS = np.array([0, 0, 4, 10, 22, 40, 70, 0], dtype=np.int32)
 PROTECTED_PASSER_BONUS = 8
-# Knight and bishop freedom is a stable positional signal. Rook and queen reach
-# is more tactical, so search evaluates it instead of ray-counting at every leaf.
+# Knight and bishop freedom is a stable positional signal.  Rook and queen
+# reach is much more tactical, so search evaluates it instead of spending leaf
+# time ray-counting it in every position.
 MOBILITY_BONUS = np.array([0, 0, 2, 1, 0, 0, 0], dtype=np.int32)
 MISSING_SHIELD_PENALTY = 11
 SECOND_SHIELD_PENALTY = 3
 OPEN_KING_FILE_PENALTY = 7
 
-# For each colour and square, squares on which an enemy pawn would stop a
-# passer. This makes passed-pawn testing a uint64 mask test at evaluation time.
+# For each colour and square, the squares on which an opposing pawn would stop
+# a passer.  Constructed once at import, then passed-pawn testing in evaluation
+# is a single uint64 mask test rather than a forward board walk.
 PASSED_PAWN_MASK = np.zeros((2, 64), dtype=np.uint64)
 for _side in range(2):
     for _square in range(64):
@@ -625,32 +595,6 @@ TT_SIZE = 1 << TT_BITS
 TT_MASK = TT_SIZE - 1
 
 TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
-
-
-@njit(cache=False, inline="always")
-def _score_to_tt(score: int, ply: int) -> int:
-    """Convert a mate score to a node-relative score for table storage.
-
-    Mate scores carry the distance from the root (``MATE - ply``).  A position
-    may be reached at a different ply through a transposition or on a later
-    move, so storing that root-relative number directly makes a shorter mate
-    look longer, or vice versa, when it is probed again.
-    """
-    if score >= MATE - MAX_PLY:
-        return score + ply
-    if score <= -MATE + MAX_PLY:
-        return score - ply
-    return score
-
-
-@njit(cache=False, inline="always")
-def _score_from_tt(score: int, ply: int) -> int:
-    """Restore a node-relative mate score after a transposition-table probe."""
-    if score >= MATE - MAX_PLY:
-        return score - ply
-    if score <= -MATE + MAX_PLY:
-        return score + ply
-    return score
 
 
 def new_tt() -> tuple[
@@ -713,7 +657,13 @@ def _mobility(board: "np.ndarray", sq: int, kind: int, side: int) -> int:
 
 @njit(cache=False, inline="always")
 def _king_safety(board: "np.ndarray", king_sq: int, side: int) -> int:
-    """Return pawn-shield and open-file danger near an unadvanced king."""
+    """Pawn-shield and open-file danger near an unadvanced king.
+
+    This is intentionally not an attack-map calculation: tactical king safety is
+    searched.  The static term only records durable pawn-cover damage.
+    """
+    # Mailbox files occupy the low decimal digit (a=1 through h=8); using 98
+    # gives the correct 0..7 rank for every file, not just file a.
     rank = (98 - king_sq) // 10
     if (side == 0 and rank > 2) or (side == 1 and rank < 5):
         return 0
@@ -752,9 +702,6 @@ def evaluate(
 ) -> int:
     """Static evaluation from the side-to-move's point of view."""
     score = 0
-    mg_score = 0
-    eg_score = 0
-    phase = 0
     npm_w = 0
     npm_b = 0
     white_pawns = np.uint64(0)
@@ -770,11 +717,9 @@ def evaluate(
             kind = p
             if kind != 1 and kind != 6:
                 npm_w += PIECE_VALUE[kind]
-            table_square = s ^ 56
-            mg_score += MG_VALUE[kind] + MG_PESTO[kind - 1, table_square]
-            eg_score += EG_VALUE[kind] + EG_PESTO[kind - 1, table_square]
-            phase += PHASE_VALUE[kind]
-            if kind == 6:
+            if kind != 6:
+                score += PIECE_VALUE[kind] + pst[kind, s]
+            else:
                 white_king = sq
 
             if kind == 1:
@@ -787,10 +732,9 @@ def evaluate(
             kind = p - 6
             if kind != 1 and kind != 6:
                 npm_b += PIECE_VALUE[kind]
-            mg_score -= MG_VALUE[kind] + MG_PESTO[kind - 1, s]
-            eg_score -= EG_VALUE[kind] + EG_PESTO[kind - 1, s]
-            phase += PHASE_VALUE[kind]
-            if kind == 6:
+            if kind != 6:
+                score -= PIECE_VALUE[kind] + pst[kind, s ^ 56]
+            else:
                 black_king = sq
 
             if kind == 1:
@@ -800,14 +744,15 @@ def evaluate(
                 if mobility_weight != 0:
                     score -= mobility_weight * _mobility(board, sq, kind, 1)
 
-    if phase > 24:
-        phase = 24
-    score = (mg_score * phase + eg_score * (24 - phase)) // 24
     endgame = (npm_w + npm_b) <= ENDGAME_MATERIAL
     for s in range(64):
         sq = 91 + (s & 7) - 10 * (s >> 3)
         p = board[sq]
-        if p == 1 and (black_pawns & PASSED_PAWN_MASK[0, s]) == 0:
+        if p == 6:
+            score += king_end[s] if endgame else king_mid[s]
+        elif p == 12:
+            score -= king_end[s ^ 56] if endgame else king_mid[s ^ 56]
+        elif p == 1 and (black_pawns & PASSED_PAWN_MASK[0, s]) == 0:
             score += PASSED_PAWN_BONUS[s >> 3]
             if board[sq + 9] == 1 or board[sq + 11] == 1:
                 score += PROTECTED_PASSER_BONUS
@@ -856,156 +801,6 @@ def _mvv_lva(board: "np.ndarray", m: int) -> int:
     return int(vv * 16 - av + pv * 16)
 
 
-@njit(cache=False, inline="always")
-def _least_attacker(board: "np.ndarray", target: int, side: int) -> int:
-    """Return the square of ``side``'s cheapest pseudo-legal attacker.
-
-    This is the mailbox analogue of the bitboard attacker scan in the team's C++
-    SEE. Looking outwards from the exchange square exposes x-ray sliders after
-    every recapture without rebuilding an attack map.
-    """
-    pawn = 1 if side == 0 else 7
-    if side == 0:
-        if board[target + 9] == pawn:
-            return target + 9
-        if board[target + 11] == pawn:
-            return target + 11
-    else:
-        if board[target - 9] == pawn:
-            return target - 9
-        if board[target - 11] == pawn:
-            return target - 11
-
-    knight = 2 if side == 0 else 8
-    for k in range(8):
-        square = target + N_OFFSETS_SEARCH[k]
-        if board[square] == knight:
-            return int(square)
-
-    bishop = 3 if side == 0 else 9
-    rook = 4 if side == 0 else 10
-    queen = 5 if side == 0 else 11
-    queen_square = 0
-    for k in range(4):
-        direction = BISHOP_OFFSETS[k]
-        square = target + direction
-        while board[square] == EMPTY:
-            square += direction
-        piece = board[square]
-        if piece == bishop:
-            return int(square)
-        if piece == queen:
-            queen_square = square
-    for k in range(4):
-        direction = ROOK_OFFSETS[k]
-        square = target + direction
-        while board[square] == EMPTY:
-            square += direction
-        piece = board[square]
-        if piece == rook:
-            return int(square)
-        if piece == queen:
-            queen_square = square
-    if queen_square != 0:
-        return queen_square
-
-    king = 6 if side == 0 else 12
-    for k in range(8):
-        square = target + KING_OFFSETS_SEARCH[k]
-        if board[square] == king:
-            return int(square)
-    return 0
-
-
-@njit(cache=False)
-def see(
-    board: "np.ndarray", side: int, castling: int, ep: int, m: int,
-    offsets: "np.ndarray", n_offsets: "np.ndarray", is_slider: "np.ndarray",
-) -> int:
-    """Static exchange evaluation for a capture, from the mover's perspective.
-
-    The routine follows least-valuable recaptures on one square, revealing slider
-    x-rays as the square empties, then minimaxes the material gains backwards.
-    As in the original C++ version, it deliberately models material only; it is
-    used for move ordering and conservative quiescence pruning, not as an eval.
-    """
-    target = mv_to(m)
-    victim = board[target]
-    if mv_flags(m) == 1:
-        victim = 7 if side == 0 else 1
-    if victim == EMPTY or victim == OFF:  # noqa: SIM109 (explicit compares are faster in Numba)
-        return 0
-
-    gains = np.empty(32, dtype=np.int32)
-    moves = np.empty(32, dtype=np.int32)
-    captured_stack = np.empty(32, dtype=np.int8)
-    sides = np.empty(32, dtype=np.int8)
-    victim_kind = victim if victim <= 6 else victim - 6
-    gains[0] = PIECE_VALUE[victim_kind]
-
-    captured, next_castling, next_ep = make_move(board, side, castling, ep, m)
-    moves[0] = m
-    captured_stack[0] = captured
-    sides[0] = side
-    count = 1
-    depth = 0
-    recapturing_side = 1 - side
-
-    while count < 32:
-        attacker_square = _least_attacker(board, target, recapturing_side)
-        if attacker_square == 0:
-            break
-        attacker = board[attacker_square]
-        attacker_kind = attacker if attacker <= 6 else attacker - 6
-        previous_attacker = board[target]
-        previous_kind = (
-            previous_attacker if previous_attacker <= 6 else previous_attacker - 6
-        )
-        gains[depth + 1] = PIECE_VALUE[previous_kind] - gains[depth]
-        recapture = encode(attacker_square, target, 0, 0)
-        captured, next_castling, next_ep = make_move(
-            board, recapturing_side, next_castling, next_ep, recapture
-        )
-        # A king may only enter an unattacked exchange square. Other pinned
-        # attackers are intentionally treated like the C++ SEE: an ordering
-        # approximation, never a source of a search cutoff by itself.
-        if attacker_kind == 6 and in_check(board, recapturing_side, offsets, n_offsets, is_slider):
-            unmake_move(board, recapturing_side, recapture, captured)
-            break
-        moves[count] = recapture
-        captured_stack[count] = captured
-        sides[count] = recapturing_side
-        count += 1
-        depth += 1
-        recapturing_side = 1 - recapturing_side
-
-    while depth > 0:
-        previous = gains[depth - 1]
-        if gains[depth] > -previous:
-            gains[depth - 1] = -gains[depth]
-        depth -= 1
-
-    for index in range(count - 1, -1, -1):
-        unmake_move(board, sides[index], moves[index], captured_stack[index])
-    return int(gains[0])
-
-
-@njit(cache=False, inline="always")
-def _is_third_repetition(
-    h: int, game_hashes: "np.ndarray", game_count: int,
-    path_hashes: "np.ndarray", path_count: int,
-) -> bool:
-    """Would adding ``h`` make this search line a threefold repetition?"""
-    occurrences = 0
-    for index in range(game_count):
-        if game_hashes[index] == h:
-            occurrences += 1
-    for index in range(path_count):
-        if path_hashes[index] == h:
-            occurrences += 1
-    return occurrences >= 2
-
-
 @njit(cache=False)
 def _order(
     board: "np.ndarray",
@@ -1017,11 +812,6 @@ def _order(
     ply: int,
     history: "np.ndarray",
     side: int,
-    castling: int,
-    ep: int,
-    offsets: "np.ndarray",
-    n_offsets: "np.ndarray",
-    is_slider: "np.ndarray",
 ) -> None:
     """Score each move for ordering; the caller does selection sort on the fly."""
     for i in range(n):
@@ -1030,16 +820,8 @@ def _order(
             scores[i] = 1 << 28
             continue
         victim = board[mv_to(m)]
-        if (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1:
-            if mv_promo(m) != 0 or see(
-                board, side, castling, ep, m, offsets, n_offsets, is_slider
-            ) >= 0:
-                scores[i] = (1 << 24) + _mvv_lva(board, m)
-            else:
-                # Retain losing captures for tactical completeness, but place
-                # them behind killer quiets. This is the C++ engine's SEE-aware
-                # ordering policy expressed in the mailbox score bands.
-                scores[i] = (1 << 20) + _mvv_lva(board, m)
+        if (victim != EMPTY and victim != OFF) or mv_promo(m) != 0:
+            scores[i] = (1 << 24) + _mvv_lva(board, m)
             continue
         if ply < MAX_PLY and (m == killers[ply, 0] or m == killers[ply, 1]):
             scores[i] = 1 << 22
@@ -1086,12 +868,6 @@ def quiesce(
         # In check every legal move is an evasion candidate.  Otherwise retain
         # captures, promotions, and en-passant (whose destination is empty).
         if checked or (victim != EMPTY and victim != OFF) or mv_promo(m) != 0 or mv_flags(m) == 1:
-            if (
-                not checked
-                and mv_promo(m) == 0
-                and see(board, side, castling, ep, m, offsets, n_offsets, is_slider) < 0
-            ):
-                continue
             buf[cnt] = m
             scores[cnt] = _mvv_lva(board, m)
             cnt += 1
@@ -1139,8 +915,6 @@ def negamax(
     killers: "np.ndarray", history: "np.ndarray", counters: "np.ndarray",
     node_limit: int,
     zp: "np.ndarray", zs: int, zc: "np.ndarray", ze: "np.ndarray",
-    game_hashes: "np.ndarray", game_count: int,
-    path_hashes: "np.ndarray", path_count: int,
 ) -> int:
     """Alpha-beta with a transposition table, killers, history and quiescence."""
     counters[0] += 1
@@ -1152,26 +926,19 @@ def negamax(
     if checked:
         depth += 1  # check extension: never let a forcing line fall off the horizon
 
-    h = zobrist(board, side, castling, ep, zp, zs, zc, ze)
-    if _is_third_repetition(h, game_hashes, game_count, path_hashes, path_count):
-        return 0
-
     if depth <= 0:
         return quiesce(board, side, castling, ep, alpha, beta,
                        offsets, n_offsets, is_slider, pst, king_mid, king_end,
                        counters, node_limit)
 
-    next_path_count = path_count
-    if path_count < MAX_PLY:
-        path_hashes[path_count] = h
-        next_path_count += 1
+    h = zobrist(board, side, castling, ep, zp, zs, zc, ze)
     idx = h & TT_MASK
     tt_hit_move = 0
     if tt_key[idx] == h:
         tt_hit_move = tt_move_a[idx]
         if tt_depth[idx] >= depth:
             f = tt_flag[idx]
-            s = _score_from_tt(tt_score[idx], ply)
+            s = tt_score[idx]
             if f == TT_EXACT:
                 return int(s)
             if f == TT_LOWER and s > alpha:
@@ -1200,8 +967,7 @@ def negamax(
                               -beta, -beta + 1, ply + 1,
                               offsets, n_offsets, is_slider, pst, king_mid, king_end,
                               tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                              killers, history, counters, node_limit, zp, zs, zc, ze,
-                              game_hashes, game_count, path_hashes, next_path_count)
+                              killers, history, counters, node_limit, zp, zs, zc, ze)
         if counters[1] == 1:
             return 0
         if null_score >= beta:
@@ -1210,10 +976,7 @@ def negamax(
     buf = np.empty(256, dtype=np.int32)
     n = gen_moves(board, side, castling, ep, buf, offsets, n_offsets, is_slider)
     scores = np.empty(n, dtype=np.int32)
-    _order(
-        board, buf, n, scores, tt_hit_move, killers, ply, history, side,
-        castling, ep, offsets, n_offsets, is_slider,
-    )
+    _order(board, buf, n, scores, tt_hit_move, killers, ply, history, side)
 
     best_score = -INF
     best_move = 0
@@ -1254,15 +1017,13 @@ def negamax(
                              -beta, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                             killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             killers, history, counters, node_limit, zp, zs, zc, ze)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1 - red,
                              -alpha - 1, -alpha, ply + 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                             killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, next_path_count)
+                             killers, history, counters, node_limit, zp, zs, zc, ze)
             # Failed high on the null window (or the reduction was too aggressive):
             # re-search with the full window at full depth.
             if score > alpha and (score < beta or red > 0):
@@ -1271,8 +1032,7 @@ def negamax(
                                  offsets, n_offsets, is_slider, pst, king_mid,
                                  king_end, tt_key, tt_score, tt_move_a, tt_depth,
                                  tt_flag, killers, history, counters, node_limit,
-                                 zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, next_path_count)
+                                 zp, zs, zc, ze)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
@@ -1303,7 +1063,7 @@ def negamax(
         flag = TT_LOWER
     if tt_depth[idx] <= depth or tt_key[idx] != h:
         tt_key[idx] = h
-        tt_score[idx] = _score_to_tt(best_score, ply)
+        tt_score[idx] = best_score
         tt_move_a[idx] = best_move
         tt_depth[idx] = depth
         tt_flag[idx] = flag
@@ -1322,24 +1082,19 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
                 history: "np.ndarray", counters: "np.ndarray",
                 node_limit: int, zp: "np.ndarray", zs: int,
                 zc: "np.ndarray", ze: "np.ndarray",
-                prev_best: int, game_hashes: "np.ndarray",
-                game_count: int) -> "tuple[int, int]":
+                prev_best: int) -> "tuple[int, int]":
     """One iteration of iterative deepening. Returns (score, best_move)."""
     buf = np.empty(256, dtype=np.int32)
     n = gen_moves(board, side, castling, ep, buf, offsets, n_offsets, is_slider)
     scores = np.empty(n, dtype=np.int32)
-    _order(
-        board, buf, n, scores, prev_best, killers, 0, history, side,
-        castling, ep, offsets, n_offsets, is_slider,
-    )
+    _order(board, buf, n, scores, prev_best, killers, 0, history, side)
 
     alpha = -INF
     beta = INF
     best_move = 0
     best_score = -INF
-    legal = 0
-    path_hashes = np.zeros(MAX_PLY, dtype=np.int64)
 
+    legal = 0
     for i in range(n):
         pick = i
         for j in range(i + 1, n):
@@ -1355,30 +1110,35 @@ def search_root(board: "np.ndarray", side: int, castling: int, ep: int, depth: i
             unmake_move(board, side, m, captured)
             continue
         legal += 1
+
+        # Principal variation search at the root.  Iterative deepening places the
+        # previous iteration's PV move first, so every later root move is usually
+        # worse than alpha.  A null-window probe proves that cheaply; a move which
+        # does beat alpha is immediately re-searched with the full window.  The
+        # interior search already does this, but omitting it at the root made every
+        # plausible quiet alternative pay for an expensive full-window search.
+        #
+        # Do not use the pseudo-move index here: an illegal pseudo-move can precede
+        # the first legal move in a checked position.
         if legal == 1:
-            # The first root move establishes the principal variation.  As at
-            # interior nodes, later moves get a cheap null-window probe first;
-            # a probe that improves alpha is re-searched with the full window.
             score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
                              -beta, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                             killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             killers, history, counters, node_limit, zp, zs, zc, ze)
         else:
             score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
                              -alpha - 1, -alpha, 1,
                              offsets, n_offsets, is_slider, pst, king_mid, king_end,
                              tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                             killers, history, counters, node_limit, zp, zs, zc, ze,
-                             game_hashes, game_count, path_hashes, 0)
+                             killers, history, counters, node_limit, zp, zs, zc, ze)
             if score > alpha and score < beta:
                 score = -negamax(board, 1 - side, new_cr, new_ep, depth - 1,
                                  -beta, -alpha, 1,
-                                 offsets, n_offsets, is_slider, pst, king_mid, king_end,
-                                 tt_key, tt_score, tt_move_a, tt_depth, tt_flag,
-                                 killers, history, counters, node_limit, zp, zs, zc, ze,
-                                 game_hashes, game_count, path_hashes, 0)
+                                 offsets, n_offsets, is_slider, pst, king_mid,
+                                 king_end, tt_key, tt_score, tt_move_a, tt_depth,
+                                 tt_flag, killers, history, counters, node_limit,
+                                 zp, zs, zc, ze)
         unmake_move(board, side, m, captured)
 
         if counters[1] == 1:
@@ -1445,21 +1205,12 @@ class _Engine:
         self.tt = new_tt()
         self.killers = np.zeros((MAX_PLY, 2), dtype=np.int32)
         self.history = np.zeros((2, 120, 120), dtype=np.int32)
-        # Root positions supplied by the runner. The process survives for one
-        # game, so these are the real game history used to recognise a third
-        # repetition in a searched variation.
-        self.game_hashes = np.zeros(600, dtype=np.int64)
-        self.game_count = 0
         # Measured node rate, refined after every real search so the node budget
         # tracks the machine we are actually running on rather than a guess.
         self.nps = 1_500_000.0
 
     def search(self, board: chess.Board, soft_s: float, hard_s: float) -> int:
         arr, side, cr, ep = _to_arrays(board)
-        root_hash = zobrist(arr, side, cr, ep, ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP)
-        if self.game_count < len(self.game_hashes):
-            self.game_hashes[self.game_count] = root_hash
-            self.game_count += 1
         # Decay history between moves: cutoffs from an earlier phase should inform
         # ordering, not dominate it.
         self.history //= 2
@@ -1483,7 +1234,6 @@ class _Engine:
                 self.tt[0], self.tt[1], self.tt[2], self.tt[3], self.tt[4],
                 self.killers, self.history, counters, node_limit,
                 ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
-                self.game_hashes, self.game_count,
             )
             spent = time.time() - start
             if spent > 0.02 and counters[0] > 0:
@@ -1552,8 +1302,6 @@ def _warmup() -> None:
     _ENGINE.tt = new_tt()
     _ENGINE.history[:] = 0
     _ENGINE.killers[:] = 0
-    _ENGINE.game_hashes[:] = 0
-    _ENGINE.game_count = 0
     _ENGINE.nps = 1_500_000.0
 
 

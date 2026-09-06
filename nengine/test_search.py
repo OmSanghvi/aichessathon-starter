@@ -28,6 +28,7 @@ from nengine.search import (  # noqa: E402
     ZOB_SIDE,
     new_tt,
     search_root,
+    zobrist,
 )
 from nengine.test_perft import to_arrays  # noqa: E402
 
@@ -49,17 +50,19 @@ def run(fen: str, max_depth: int, node_limit: int = 200_000_000):
     tt = new_tt()
     killers = np.zeros((MAX_PLY, 2), dtype=np.int32)
     history = np.zeros((2, 120, 120), dtype=np.int32)
+    game_hashes = np.zeros(600, dtype=np.int64)
     best = 0
     rows = []
     for d in range(1, max_depth + 1):
         counters = np.zeros(2, dtype=np.int64)
+        root_hash = zobrist(board, side, cr, ep, ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP)
         t0 = time.perf_counter()
         score, mv = search_root(
             board, side, cr, ep, d,
             OFFSETS, N_OFFSETS, IS_SLIDER, PST, PST_KING_MID, PST_KING_END,
             tt[0], tt[1], tt[2], tt[3], tt[4],
             killers, history, counters, node_limit,
-            ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
+            ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best, game_hashes, 1, root_hash,
         )
         dt = time.perf_counter() - t0
         if counters[1] == 1:

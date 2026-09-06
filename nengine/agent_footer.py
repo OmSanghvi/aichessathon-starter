@@ -52,12 +52,21 @@ class _Engine:
         self.tt = new_tt()
         self.killers = np.zeros((MAX_PLY, 2), dtype=np.int32)
         self.history = np.zeros((2, 120, 120), dtype=np.int32)
+        # Root positions supplied by the runner. The process survives for one
+        # game, so these are the real game history used to recognise a third
+        # repetition in a searched variation.
+        self.game_hashes = np.zeros(600, dtype=np.int64)
+        self.game_count = 0
         # Measured node rate, refined after every real search so the node budget
         # tracks the machine we are actually running on rather than a guess.
         self.nps = 1_500_000.0
 
     def search(self, board: chess.Board, soft_s: float, hard_s: float) -> int:
         arr, side, cr, ep = _to_arrays(board)
+        root_hash = zobrist(arr, side, cr, ep, ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP)
+        if self.game_count < len(self.game_hashes):
+            self.game_hashes[self.game_count] = root_hash
+            self.game_count += 1
         # Decay history between moves: cutoffs from an earlier phase should inform
         # ordering, not dominate it.
         self.history //= 2
@@ -81,6 +90,7 @@ class _Engine:
                 self.tt[0], self.tt[1], self.tt[2], self.tt[3], self.tt[4],
                 self.killers, self.history, counters, node_limit,
                 ZOB_PIECE, ZOB_SIDE, ZOB_CASTLE, ZOB_EP, best,
+                self.game_hashes, self.game_count, root_hash,
             )
             spent = time.time() - start
             if spent > 0.02 and counters[0] > 0:
@@ -149,6 +159,8 @@ def _warmup() -> None:
     _ENGINE.tt = new_tt()
     _ENGINE.history[:] = 0
     _ENGINE.killers[:] = 0
+    _ENGINE.game_hashes[:] = 0
+    _ENGINE.game_count = 0
     _ENGINE.nps = 1_500_000.0
 
 
